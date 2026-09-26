@@ -246,6 +246,8 @@ button{font:inherit;color:inherit}
 .arrive{position:absolute;left:12px;right:12px;top:calc(env(safe-area-inset-top,0px) + 106px);z-index:8;display:flex;align-items:center;gap:8px;background:var(--sea);color:#fff;border-radius:16px;padding:10px 10px 10px 14px;box-shadow:var(--shadow);font-weight:700;font-size:14px}
 .arrive span{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .arrive .go{background:#fff;color:var(--sea)}
+.arrive.update{background:var(--ai);top:auto;bottom:calc(var(--act-h) + 12px)}
+:root[data-theme="dark"] .arrive.update{color:#0c1219}
 .arrive .small-btn{flex:0 0 auto;color:var(--ink)}
 @media (min-width: 900px){.arrive{right:434px;max-width:420px}}
 .icon-btn.gps-wait{animation:bob 1s ease-in-out infinite}
@@ -299,6 +301,8 @@ body.tap-mode #gl{cursor:crosshair}
   </header>
 
   <div class="arrive" id="arrive" hidden role="status"><span id="arriveText"></span><button class="small-btn go" id="arriveGo">도착 ▶</button><button class="small-btn" id="arriveX" aria-label="알림 닫기">✕</button></div>
+
+  <div class="arrive update" id="updateBar" hidden role="status"><span>🔄 새 버전이 준비됐어요</span><button class="small-btn go" id="updateGo">업데이트</button></div>
 
   <div class="fabs" id="fabs">
     <button class="icon-btn" id="followBtn" aria-pressed="true" title="원정대 따라가기" aria-label="원정대 따라가기">🎯</button>

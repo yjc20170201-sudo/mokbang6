@@ -96,6 +96,7 @@ export class World {
     const region = new Region(geo, cfg, this.q);
     this.region = region; // lines are ready, so callers can plan paths before the heavy build
     await sleep(16);
+    if (this.region !== region) return null; // a newer load replaced this one
     region.build({ clear: typeof clear === 'function' ? clear() : clear });
     this.scene.add(region.group);
     this.landmarks = [];

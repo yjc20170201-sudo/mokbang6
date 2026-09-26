@@ -1,6 +1,8 @@
 // Service worker for the installed app (generated into dist/sw.js by tools/build-pages.mjs).
-// Code & data: network-first (fresh when online, cached when offline). Map geometry, icons, CDN libs, fonts: cache-first.
-const VERSION = '3d00929782';
+// Each version is an exact snapshot: every shipped file is precached (bypassing the HTTP cache) under a
+// cache named by the content hash, and served cache-first. Updates arrive only as a new sw.js; the page
+// shows an "업데이트" button that tells the waiting worker to take over, then reloads once.
+const VERSION = '130de675bc';
 const CACHE = 'mokbang6-' + VERSION;
 const CORE = [
   "./",
@@ -29,18 +31,19 @@ const CORE = [
 const CDN = [
   "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js",
   "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/controls/MapControls.js",
-  "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/controls/OrbitControls.js"
+  "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/controls/OrbitControls.js",
+  "https://fonts.googleapis.com/css2?family=Jua&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap"
 ];
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
     const c = await caches.open(CACHE);
-    await c.addAll(CORE);
+    await c.addAll(CORE.map(u => new Request(u, { cache: 'reload' })));
     // CDN files are best-effort: a flaky connection must not block the install
     await Promise.all(CDN.map(u => c.add(new Request(u, { mode: 'cors' })).catch(() => {})));
-    await self.skipWaiting();
   })());
 });
+self.addEventListener('message', (e) => { if (e.data === 'skip') self.skipWaiting(); });
 
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
@@ -51,19 +54,6 @@ self.addEventListener('activate', (e) => {
 
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 
-async function networkFirst(req) {
-  const c = await caches.open(CACHE);
-  try {
-    const res = await withTimeout(fetch(req), 4000);
-    if (res && res.ok) c.put(req, res.clone());
-    return res;
-  } catch {
-    const hit = await c.match(req, { ignoreSearch: true });
-    if (hit) return hit;
-    if (req.mode === 'navigate') { const shell = await c.match('./index.html'); if (shell) return shell; }
-    throw new Error('offline and not cached');
-  }
-}
 async function cacheFirst(req) {
   const c = await caches.open(CACHE);
   const hit = await c.match(req, { ignoreSearch: true });
@@ -78,9 +68,13 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin === self.location.origin) {
-    if (req.mode === 'navigate' || /\.(html|js|webmanifest)$/.test(url.pathname) || url.pathname.endsWith('/')) e.respondWith(networkFirst(req));
+    if (req.mode === 'navigate') e.respondWith(caches.open(CACHE).then(c => c.match('./index.html')).then(r => r || fetch(req)));
     else e.respondWith(cacheFirst(req));
     return;
   }
-  if (/^(cdn\.jsdelivr\.net|fonts\.googleapis\.com|fonts\.gstatic\.com)$/.test(url.hostname)) e.respondWith(cacheFirst(req));
+  if (url.hostname === 'fonts.googleapis.com') { // never let a stalled font stylesheet blank the screen
+    e.respondWith(withTimeout(cacheFirst(req), 3000).catch(() => new Response('', { headers: { 'Content-Type': 'text/css' } })));
+    return;
+  }
+  if (/^(cdn\.jsdelivr\.net|fonts\.gstatic\.com)$/.test(url.hostname)) e.respondWith(cacheFirst(req));
 });

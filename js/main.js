@@ -169,16 +169,29 @@ function clearZones() {
 }
 
 // ---------- region loading ----------
-async function ensureRegion(rid, { quiet = false } = {}) {
+let regionLoad = null;
+async function ensureRegion(rid, opts = {}) {
   if (regionId === rid && world.region) return;
   if (!C.regions[rid]) return;
+  if (regionLoad?.rid === rid) return regionLoad.p;
+  const p = loadRegionNow(rid, opts);
+  regionLoad = { rid, p };
+  try { return await p; } finally { if (regionLoad?.p === p) regionLoad = null; }
+}
+async function loadRegionNow(rid, { quiet = false } = {}) {
   if (!quiet) { $('#loading').hidden = false; $('#loadingText').textContent = `${C.regions[rid].title} 지도 만드는 중…`; }
-  const res = await fetch(`geo/${C.regions[rid].geo || rid}.json`);
-  const geo = await res.json();
-  regionId = rid;
-  await world.loadRegion(geo, { ...C.regions[rid] }, { clear: () => clearZones() });
-  if (S.here?.gps && S.here.region === rid) world.setMe(S.here.pos, S.here.acc);
-  $('#loading').hidden = true;
+  try {
+    const res = await fetch(`geo/${C.regions[rid].geo || rid}.json`);
+    if (!res.ok) throw new Error('geo ' + res.status);
+    const geo = await res.json();
+    regionId = rid;
+    if (S.here && !S.here.gps && S.here.region !== rid) S.here = null; // a tapped spot belongs to the old map
+    await world.loadRegion(geo, { ...C.regions[rid] }, { clear: () => clearZones() });
+    if (S.here?.gps && S.here.region === rid) world.setMe(S.here.pos, S.here.acc);
+  } catch (e) {
+    toast('📴 지도를 못 불러왔어요 — 연결을 확인하고 다시 눌러 주세요', 3800);
+    throw e;
+  } finally { $('#loading').hidden = true; }
 }
 
 // ---------- rendering the scene state ----------
@@ -218,7 +231,7 @@ const short = (s, n = 14) => { const t = String(s || '').replace(/\s*\(.*?\)\s*/
 async function showStop({ animateFrom = null } = {}) {
   const st = curStop(), p = stopPlace();
   const rid = regionOf(p);
-  if (rid !== regionId) await ensureRegion(rid);
+  if (rid !== regionId) { try { await ensureRegion(rid); } catch { renderAll(); return false; } }
   world.setTime(st.t);
   refreshMarkers(); refreshRoute();
   const pos = posOf(p, rid);
@@ -257,7 +270,7 @@ async function go(delta) {
   busy = true; renderActions();
   const myGen = gen;
   S.viewPlace = null;
-  const prevPlace = stopPlace(di, S.stop);
+  const prevPlace = stopPlace(di, S.stop), prevStop = S.stop;
   S.stop = si;
   const st = curStop(), to = stopPlace(), leg = st.leg || { m: 'walk' };
   const fromR = regionOf(prevPlace), toR = regionOf(to);
@@ -267,7 +280,7 @@ async function go(delta) {
     world.setFollow(true);
     renderAll();
     if (fromR !== toR || leg.m === 'travel' || leg.m === 'fly') {
-      await travel(leg, prevPlace, to, fromR, toR);
+      await travel(leg, prevPlace, to, fromR, toR, myGen);
     } else {
       world.setTime(st.t);
       for (const s of segmentsFor(S.day, S.stop)) {
@@ -275,12 +288,19 @@ async function go(delta) {
         else if (s.type === 'ride') await world.ride(s.pts, { color: s.color, label: s.label, speed: 950, minDur: 1.8, maxDur: 4.5 });
         else if (s.type === 'taxi') await world.ride(s.pts, { vehicle: 'taxi', label: s.label, speed: 600 });
         else if (s.type === 'boat') await world.ride(s.pts, { vehicle: 'boat', label: '🚤', speed: 400 });
+        if (myGen !== gen) return;
       }
       refreshMarkers(); refreshRoute();
     }
     if (myGen !== gen) return;
     startActivity();
     world.say(arriveLine(st), world.members[2]);
+  } catch (e) {
+    console.warn(e);
+    if (myGen === gen) { // put the crew back where they were
+      S.stop = prevStop; $('#travel').hidden = true;
+      if (regionOf(prevPlace) === regionId) { world.placeParty(posOf(prevPlace, regionId), 0); refreshMarkers(); refreshRoute(); startActivity(); }
+    }
   } finally { if (myGen === gen) { busy = false; renderAll(); store.set('pos', { city: C.id, day: S.day, stop: S.stop }); } }
 }
 function arriveLine(st) { const K = kindOf(st); return st.hello || K.hello || '도착!'; }
@@ -288,38 +308,47 @@ function arriveLine(st) { const K = kindOf(st); return st.hello || K.hello || '�
 async function arriveAtStop(fromNewDay) { // start of a day: teleport (or plane landing on day 1)
   const st = curStop(), p = stopPlace();
   if (st.leg?.m === 'fly' && st.leg.arrive) {
+    const myGen = gen;
     busy = true; renderAll();
-    const loading = ensureRegion(regionOf(p), { quiet: true });
-    await ticket(st.leg, null, p, { auto: true, loading });
-    busy = false;
-    await ensureRegion(regionOf(p), { quiet: true });
-    world.setTime(st.t, true); refreshMarkers(); refreshRoute();
-    const R = world.region, rw = C.regions[regionId].runway;
-    if (rw) { world.setFollow(true); await world.planeLand(proj(regionId, ...rw[0]), proj(regionId, ...rw[1]), posOf(p, regionId)); }
-    await showStop({ animateFrom: true });
-    world.placeParty(posOf(p, regionId), 0);
-    startActivity(); renderAll();
+    try {
+      const loading = ensureRegion(regionOf(p), { quiet: true });
+      await ticket(st.leg, null, p, { auto: true, loading });
+      await ensureRegion(regionOf(p), { quiet: true });
+      if (myGen !== gen) return;
+      world.setTime(st.t, true); refreshMarkers(); refreshRoute();
+      const rw = C.regions[regionId].runway;
+      if (rw) { world.setFollow(true); await world.planeLand(proj(regionId, ...rw[0]), proj(regionId, ...rw[1]), posOf(p, regionId)); }
+      if (myGen !== gen) return;
+      await showStop({ animateFrom: true });
+      world.placeParty(posOf(p, regionId), 0);
+      startActivity();
+    } catch (e) { console.warn(e); }
+    finally { if (myGen === gen) { busy = false; renderAll(); } }
     return;
   }
   await showStop();
   if (fromNewDay) world.say(`${S.day + 1}일차 시작! 가즈아 🔥`, world.members[0]);
 }
 
-async function travel(leg, from, to, fromR, toR) {
+async function travel(leg, from, to, fromR, toR, myGen = gen) {
   const R = world.region;
+  const stale = () => myGen !== gen;
   // departure animation inside the current region
   if (leg.m === 'fly' && !leg.arrive) {
     const rw = C.regions[fromR].runway;
-    if (rw && R) { await world.walk([posOf(from, fromR), proj(fromR, ...rw[0])], { speed: 400 }); await world.planeTakeoff(proj(fromR, ...rw[0]), proj(fromR, ...rw[1])); }
+    if (rw && R) { await world.walk([posOf(from, fromR), proj(fromR, ...rw[0])], { speed: 400 }); if (stale()) return; await world.planeTakeoff(proj(fromR, ...rw[0]), proj(fromR, ...rw[1])); }
   } else if (leg.exit && R) {
     const sA = R.station(leg.exit.line, leg.exit.from), path = R.exitPath(leg.exit.line, leg.exit.from);
     if (sA) await world.walk([posOf(from, fromR), sA], { speed: 320 });
+    if (stale()) return;
     if (path) await world.departOffMap(path, { color: leg.color || lineInfo(leg.exit.line)?.color, label: `${MODE[leg.m]?.ico || '🚄'} ${leg.name || ''}` });
   }
+  if (stale()) return;
   // ticket card while the next region loads
   const loading = toR !== regionId ? ensureRegion(toR, { quiet: true }) : Promise.resolve();
   await ticket(leg, from, to, { loading });
   await loading;
+  if (stale()) return;
   world.setTime(curStop().t, true);
   refreshMarkers(); refreshRoute();
   const R2 = world.region, B = posOf(to, toR);
@@ -329,6 +358,7 @@ async function travel(leg, from, to, fromR, toR) {
       world.members.forEach(m => m.root.visible = false);
       world.focus(sB, 1100, true); world.setFollow(true);
       await world.ride(path.slice().reverse(), { color: leg.color || lineInfo(leg.enter.line)?.color, label: `${MODE[leg.m]?.ico || '🚄'} ${leg.name || ''}`, minDur: 2.4, maxDur: 3.2 });
+      if (stale()) return;
       await world.walk([sB, B], { speed: 300 });
       return;
     }
@@ -359,7 +389,7 @@ function ticket(leg, from, to, { loading = null, auto = true } = {}) {
     requestAnimationFrame(step);
     const btn = el.querySelector('#ticketGo');
     btn.disabled = true; btn.textContent = '이동 중…';
-    await Promise.all([sleep(T), loading || Promise.resolve()]);
+    await Promise.all([sleep(T), Promise.resolve(loading).catch(() => {})]);
     btn.disabled = false; btn.textContent = '도착! ▶';
     const close = () => { if (done) return; done = true; el.hidden = true; resolve(); };
     btn.onclick = close; btn.focus();
@@ -431,11 +461,11 @@ function renderActions(next = C.days[S.day].stops[S.stop + 1]) {
   nb.textContent = busy ? '이동 중…' : last ? (S.day >= C.days.length - 1 ? '여행 마무리 ✈️' : `${S.day + 2}일차로 ▶`) : `다음: ${short(next?.label || place(next?.p)?.nameKo || '')} ▶`;
   $('#prevBtn').disabled = busy || (S.day === 0 && S.stop === 0);
 }
-function renderBody() {
+function renderBody(keepScroll = false) {
   document.querySelectorAll('.tab').forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === S.tab)));
   const b = $('#sheetBody');
   b.innerHTML = S.tab === 'here' ? (S.viewPlace ? placeHTML(S.viewPlace, true) : hereHTML()) : S.tab === 'plan' ? planHTML() : S.tab === 'near' ? nearHTML() : tipsHTML();
-  b.scrollTop = 0;
+  if (!keepScroll) b.scrollTop = 0;
 }
 function renderAll() { renderDays(); renderClock(); renderHead(); renderBody(); renderParty(); if (GPS.fix) { hideArrive(); checkArrival(); } }
 function renderParty() {
@@ -579,6 +609,7 @@ function bindUI() {
     if ((b = q('[data-jump]'))) return jumpTo(S.day, +b.dataset.jump);
     if ((b = q('[data-place]'))) return openPlace(b.dataset.place);
     if ((b = q('[data-back]'))) { S.viewPlace = null; renderBody(); refreshMarkers(); world.setFollow(true); setFollowBtn(true); return; }
+    if (busy && q('[data-swap],[data-unswap],[data-hotelpin],[data-hotelreset]')) { toast('이동이 끝나면 바꿀 수 있어요'); return; }
     if ((b = q('[data-swap]'))) { store.set(`swap:${C.id}:${S.day}:${S.stop}`, b.dataset.swap); S.viewPlace = null; toast('이 집으로 바꿨어요! 🔁'); showStop(); return; }
     if ((b = q('[data-unswap]'))) { store.set(`swap:${C.id}:${S.day}:${S.stop}`, null); showStop(); return; }
     if ((b = q('[data-filter]'))) { S.nearFilter = b.dataset.filter; renderBody(); return; }
@@ -592,7 +623,7 @@ function bindUI() {
     if ((b = q('[data-hotelreset]'))) { store.set('hotel:' + C.id, null); const p = C.places[hotelId()]; if (p?._orig) Object.assign(p, p._orig); toast('예시 위치로 되돌렸어요'); showStop(); return; }
     if ((b = q('[data-copy]'))) { const p = PHRASES[+b.dataset.copy]; navigator.clipboard?.writeText(p.jp).then(() => toast('복사했어요 📋'), () => toast(p.jp)); return; }
   });
-  $('#sheetBody').addEventListener('input', e => { if (e.target.closest('.calc')) updateCalc(); });
+  $('#sheetBody').addEventListener('input', e => { if (e.target.closest('.calc') && $('#calcYen')) updateCalc(); });
   $('#sheetBody').addEventListener('change', e => {
     if (e.target.id === 'hotelName') { const h = store.get('hotel:' + C.id, {}) || {}; h.name = e.target.value.trim(); store.set('hotel:' + C.id, h); applyHotel(); renderHead(); toast('숙소 이름 저장! 길찾기에 반영돼요'); return; }
     if (e.target.id === 'tripStart') { store.set('start:' + C.id, e.target.value || null); renderDays(); renderBody(); } });
@@ -617,6 +648,7 @@ function bindUI() {
     if (!S.tapMode) return;
     const [lat, lng] = world.region.toLatLng(hit.x, hit.z);
     if (S.pinHotel) {
+      if (busy) { toast('이동이 끝나면 다시 찍어 주세요'); return; }
       S.pinHotel = false; setHereMode(false);
       const h = store.get('hotel:' + C.id, {}) || {}; h.lat = lat; h.lng = lng; store.set('hotel:' + C.id, h);
       applyHotel(); toast('숙소 위치 저장! 🏨'); showStop(); return;
@@ -629,9 +661,9 @@ function bindUI() {
   // sheet drag (mobile)
   const sheet = $('#sheet'), grab = $('#grab');
   let drag = null;
-  const heights = () => ({ peek: peekH(), half: Math.round(innerHeight * 0.45), full: Math.round(innerHeight * 0.8) });
+  const heights = () => ({ peek: peekH(), half: Math.round(innerHeight * 0.45), full: Math.min(Math.round(innerHeight * 0.8), sheet.offsetHeight) });
   const onDown = e => { if (innerWidth >= 900) return; drag = { y: e.clientY, h: heights()[S.sheet], moved: false }; sheet.classList.add('dragging'); grab.setPointerCapture?.(e.pointerId); };
-  const onMove = e => { if (!drag) return; const dy = drag.y - e.clientY; if (Math.abs(dy) > 4) drag.moved = true; const h = Math.max(120, Math.min(innerHeight * 0.9, drag.h + dy)); sheet.style.transform = `translateY(calc(100% - ${h}px))`; drag.cur = h; };
+  const onMove = e => { if (!drag) return; const dy = drag.y - e.clientY; if (Math.abs(dy) > 4) drag.moved = true; const h = Math.max(120, Math.min(innerHeight * 0.9, sheet.offsetHeight, drag.h + dy)); sheet.style.transform = `translateY(calc(100% - ${h}px))`; drag.cur = h; };
   const onUp = () => {
     if (!drag) return; sheet.classList.remove('dragging'); sheet.style.transform = '';
     if (!drag.moved) { setSheet(S.sheet === 'peek' ? 'half' : S.sheet === 'half' ? 'full' : 'peek'); drag = null; return; }
@@ -646,11 +678,14 @@ function bindUI() {
 function peekH() { const head = $('#sheetHead').offsetHeight; return Math.min(innerHeight * 0.45, 22 + head + 46); }
 function setSheet(s) {
   S.sheet = s; const sheet = $('#sheet');
-  const H = { peek: peekH(), half: Math.round(innerHeight * 0.45), full: Math.round(innerHeight * 0.8) }[s];
+  const H = { peek: peekH(), half: Math.round(innerHeight * 0.45), full: Math.min(Math.round(innerHeight * 0.8), sheet.offsetHeight) }[s];
   sheet.style.setProperty('--peek', H + 'px');
   const act = $('#actions').offsetHeight;
   const bottom = innerWidth >= 900 ? 12 : Math.min(H, innerHeight * 0.55) + act + 10;
-  $('#fabs').style.bottom = bottom + 'px'; $('#partyTag').style.bottom = bottom + 'px';
+  const fabs = $('#fabs'), hudB = $('.hud').getBoundingClientRect().bottom + 8;
+  const fb = innerWidth >= 900 ? 12 : Math.min(bottom, innerHeight - hudB - fabs.offsetHeight);
+  fabs.style.bottom = fb + 'px'; fabs.style.visibility = innerWidth < 900 && fb < act + 10 ? 'hidden' : '';
+  $('#partyTag').style.bottom = bottom + 'px';
 }
 function setHereMode(on) {
   S.tapMode = on;
@@ -677,7 +712,7 @@ function setGpsBtn(state) {
 }
 function startGPS() {
   if (!C) return;
-  if (!gpsAvailable()) { toast('이 화면에선 GPS를 못 써요 → 지도를 탭해서 위치를 찍으세요', 3200); setHereMode(true); return; }
+  if (!gpsAvailable()) { setHereMode(true); toast('이 화면에선 GPS를 못 써요 → 지도를 탭해서 위치를 찍으세요', 3200); return; }
   if (GPS.watch != null) { focusMe(); return; }
   setGpsBtn('wait'); toast('📡 위치 찾는 중…');
   GPS.watch = navigator.geolocation.watchPosition(onGPS, onGPSError, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
@@ -691,6 +726,7 @@ function stopGPS() {
 }
 function onGPS(p) {
   if (!C) return;
+  if (S.here && !S.here.gps) { S.here = null; refreshMarkers(); }
   const { latitude: lat, longitude: lng, accuracy } = p.coords;
   const first = !GPS.fix;
   GPS.fix = { lat, lng, acc: accuracy };
@@ -707,12 +743,12 @@ function onGPS(p) {
   if (rid === regionId) {
     world.setMe(pos, accuracy);
     if (first) { world.focus(pos, 700); world.follow = false; setFollowBtn(false); toast('📡 내 위치를 찾았어요'); }
-  } else if (first) toast(`📡 지금 ${C.regions[rid].title} 근처예요. 그쪽 일정을 열면 지도에 떠요`, 3800);
-  if (S.tab === 'near' && (!GPS.lastRender || dist(GPS.lastRender, GPS.fix) > 25)) { GPS.lastRender = { lat, lng }; renderBody(); }
+  } else { world.clearMe(); if (first) toast(`📡 지금 ${C.regions[rid].title} 근처예요. 그쪽 일정을 열면 지도에 떠요`, 3800); }
+  if (S.tab === 'near' && (!GPS.lastRender || dist(GPS.lastRender, GPS.fix) > 25)) { GPS.lastRender = { lat, lng }; renderBody(true); }
   checkArrival();
 }
 function onGPSError(e) {
-  if (e.code === 1) { stopGPS(); toast('위치 권한이 꺼져 있어요. 폰 설정에서 허용하거나, 지도를 탭해서 위치를 찍으세요', 4200); setHereMode(true); }
+  if (e.code === 1) { stopGPS(); setHereMode(true); toast('위치 권한이 꺼져 있어요. 폰 설정에서 허용하거나, 지도를 탭해서 위치를 찍으세요', 4200); }
   else if (!GPS.fix) toast('GPS 신호를 찾는 중… 건물 밖에서 다시 해보세요', 3000);
 }
 function focusMe() {
@@ -725,9 +761,10 @@ function checkArrival() {
   if (!next) return hideArrive();
   const np = stopPlace(S.day, S.stop + 1), key = `${C.id}:${S.day}:${S.stop + 1}`;
   if (!np || np.lat == null) return;
+  const cp = stopPlace(), dc = cp?.lat != null ? dist(S.here, cp) : Infinity;
   const d = dist(S.here, np), near = Math.max(90, Math.min(200, (S.here.acc || 30) + 60));
-  if (d < near && GPS.dismissed !== key) showArrive(np, key);
-  else if (d > near * 3) hideArrive();
+  if (d < near && d < dc * 0.6 && GPS.dismissed !== key) showArrive(np, key);
+  else if (d > near * 3 || d >= dc) hideArrive();
 }
 function showArrive(p, key) {
   const el = $('#arrive'); if (!el.hidden && el.dataset.key === key) return;
@@ -740,14 +777,33 @@ let installEvt = null;
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (S.tab === 'tips' && C) renderBody(); });
 window.addEventListener('appinstalled', () => { installEvt = null; toast('📲 설치 완료! 홈 화면에서 여세요'); });
 const isPWA = () => !!document.querySelector('link[rel="manifest"]');
+let offlineOK = false;
+async function checkOffline() {
+  try { offlineOK = !!navigator.serviceWorker?.controller && !!(await caches.match('https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js')); } catch { offlineOK = false; }
+  if (S.tab === 'tips' && C) renderBody(true);
+}
+async function setupSW() {
+  const sw = navigator.serviceWorker, had = !!sw.controller;
+  sw.addEventListener('controllerchange', () => { if (had) location.reload(); else checkOffline(); });
+  try {
+    const reg = await sw.register('sw.js');
+    const offer = w => { if (!sw.controller) return; const bar = $('#updateBar'); bar.hidden = false; $('#updateGo').onclick = () => { bar.hidden = true; w.postMessage('skip'); }; };
+    if (reg.waiting) offer(reg.waiting);
+    reg.addEventListener('updatefound', () => { const w = reg.installing; w?.addEventListener('statechange', () => { if (w.state === 'installed') { offer(w); checkOffline(); } }); });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+  } catch { /* offline cache is optional */ }
+  checkOffline();
+}
 const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 function installHTML() {
   if (!isPWA()) return '';
-  if (isStandalone()) return `<div class="sec card"><h4>✅ 앱으로 실행 중</h4><p>오프라인에서도 지도·일정이 떠요. 위치는 📍 버튼으로 켜세요.</p></div>`;
+  if (isStandalone()) return offlineOK
+    ? `<div class="sec card"><h4>✅ 앱으로 실행 중</h4><p>오프라인에서도 지도·일정이 떠요. 위치는 📍 버튼으로 켜세요.</p></div>`
+    : `<div class="sec card"><h4>⏳ 오프라인 준비 중</h4><p>와이파이에서 1분쯤 켜 두세요. 준비되면 여기가 ✅로 바뀌어요.</p></div>`;
   const ua = navigator.userAgent, ios = /iPhone|iPad|iPod/i.test(ua), inApp = /KAKAOTALK|NAVER|Instagram|FBAN|FBAV|Line\//i.test(ua);
   const how = installEvt ? `<p>버튼 한 번이면 홈 화면에 아이콘이 생겨요.</p><button class="btn primary" style="margin-top:10px;width:100%" data-install="1">📲 설치하기</button>`
     : inApp ? `<p>카톡·네이버 안에서는 설치가 안 돼요. 오른쪽 아래(또는 위) <b>⋯ 메뉴 → 다른 브라우저로 열기</b>를 누른 뒤 설치하세요.</p>`
-    : ios ? `<p>사파리 아래쪽 <b>공유 버튼(□↑)</b> → <b>홈 화면에 추가</b>를 누르세요.</p>`
+    : ios ? `<p>사파리 아래쪽 <b>공유 버튼(□↑)</b> → <b>홈 화면에 추가</b>를 누르세요. 설치한 앱은 와이파이에서 한 번 열어 두세요 (이름표·숙소 설정은 앱에서 다시 입력).</p>`
     : `<p>크롬 오른쪽 위 <b>⋮ 메뉴 → 앱 설치</b> (또는 홈 화면에 추가)를 누르세요.</p>`;
   return `<div class="sec card install"><h4>📲 폰에 앱으로 설치</h4>${how}<p class="note" style="margin-top:6px">설치하면 전체화면·오프라인·GPS가 다 돼요.</p></div>`;
 }
@@ -831,7 +887,7 @@ async function loadCity(id, fresh) {
   window.__trip = { world, S, get C() { return C; }, jump: (d, s) => jumpTo(d, s), next: () => go(1), city: id => loadCity(id, false) };
   world.setCrew(crewDefs());
   bindUI();
-  if ('serviceWorker' in navigator && isPWA()) navigator.serviceWorker.register('sw.js').catch(() => { /* offline cache is optional */ });
+  if ('serviceWorker' in navigator && isPWA()) setupSW();
   if (!S.city) { $('#loading').hidden = true; openIntro(true); return; }
   try { await loadCity(S.city, false); } catch (e) { console.error(e); $('#loadingText').textContent = '불러오기 실패 — 새로고침 해주세요'; }
 })();
