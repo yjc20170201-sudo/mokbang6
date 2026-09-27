@@ -83,6 +83,16 @@ function isOpen(p, dow, min) {
 }
 function gmapsDir(p, mode = 'transit') { return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(p.q || p.nameJa || p.nameKo)}&travelmode=${mode}`; }
 function gmapsSearch(p) { return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.q || p.nameJa || p.nameKo)}`; }
+// real-world views: Google Street View (nearest panorama), Google Earth 3D (opens the Earth app on phones), Apple Look Around (iOS 18.4+ unified Maps URL; Apple has no Look Around in Wakayama)
+const IS_IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const ll = p => `${(+p.lat).toFixed(6)},${(+p.lng).toFixed(6)}`;
+function realViewLinks(p) {
+  if (p.lat == null || p.lng == null || !isFinite(p.lat) || !isFinite(p.lng)) return '';
+  const a = (href, label) => `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
+  return a(`https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${ll(p)}`, '🚶 스트리트뷰')
+    + a(`https://earth.google.com/web/@${ll(p)},40a,450d,35y,0h,65t,0r`, '🌍 3D로 보기')
+    + (IS_IOS && regionOf(p) !== 'shirahama' ? a(`https://maps.apple.com/look-around?coordinate=${ll(p)}`, '🍎 애플 둘러보기') : '');
+}
 function toast(msg, ms = 2400) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), ms); }
 function loadCrew() { // [{ c: character index, name }], 2–8 people
   const v2 = store.get('crew2', null);
@@ -510,7 +520,7 @@ function placeCore(p) {
     ${p.tips?.length ? `<div class="sec"><h3>💡 알아두면 좋은 것</h3><ul class="tips">${p.tips.map(t => `<li>${esc(fitN(t))}</li>`).join('')}</ul></div>` : ''}
     ${p.booking ? `<div class="sec"><h3>📅 예약 방법</h3><div class="card"><p>${esc(p.booking.how || '')}</p>${p.booking.lang ? `<p class="note">언어: ${esc(p.booking.lang)}${p.booking.lead ? ' · ' + esc(p.booking.lead) : ''}</p>` : ''}${p.booking.url ? `<div class="links" style="margin-top:8px"><a href="${esc(p.booking.url)}" target="_blank" rel="noopener">예약 페이지 열기 ↗</a></div>` : ''}</div></div>` : ''}
     ${p.gear ? `<div class="sec"><h3>🎒 장비</h3><p style="margin:0;font-size:13.5px;color:var(--ink-2)">${esc(p.gear)}</p></div>` : ''}
-    <div class="sec links"><a href="${gmapsSearch(p)}" target="_blank" rel="noopener">📍 구글맵에서 보기</a><a href="${gmapsDir(p)}" target="_blank" rel="noopener">🧭 여기로 길찾기</a>${p.nameJa && CAT[p.cat]?.g !== 'see' ? `<a href="https://tabelog.com/rstLst/?sw=${encodeURIComponent(p.nameJa)}" target="_blank" rel="noopener">⭐ 타베로그 리뷰</a>` : ''}</div>`;
+    <div class="sec links"><a href="${gmapsSearch(p)}" target="_blank" rel="noopener">📍 구글맵에서 보기</a><a href="${gmapsDir(p)}" target="_blank" rel="noopener">🧭 여기로 길찾기</a>${realViewLinks(p)}${p.nameJa && CAT[p.cat]?.g !== 'see' ? `<a href="https://tabelog.com/rstLst/?sw=${encodeURIComponent(p.nameJa)}" target="_blank" rel="noopener">⭐ 타베로그 리뷰</a>` : ''}</div>`;
 }
 function hereHTML() {
   const st = curStop(), p = stopPlace(), prev = S.stop ? stopPlace(S.day, S.stop - 1) : null;
