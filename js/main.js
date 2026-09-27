@@ -1265,16 +1265,17 @@ function openShareCreate() {
     <p class="note">방장 한 명만 하면 돼요. 사진은 형님 GitHub의 <b>비공개</b> 저장소 <b>${REPO.name}</b>에 모여요.</p>
     <ol class="mini-steps">
       <li>아래 버튼으로 GitHub 토큰 만들기 화면을 열어요 (GitHub 로그인).</li>
-      <li><b>Token name</b>: mokbang6 · <b>Expiration</b>: 90 days</li>
-      <li><b>Repository access</b> → Only select repositories → <b>${REPO.name}</b></li>
-      <li><b>Permissions</b> → Repository permissions → <b>Contents: Read and write</b></li>
-      <li><b>Generate token</b> → 나온 <code>github_pat_…</code>를 복사해서 아래에 붙여넣기</li>
+      <li><b>토큰 이름</b>: mokbang6 · <b>만료</b>: 여행 끝나는 날 이후로</li>
+      <li><b>저장소 액세스</b> → <b>저장소만 선택합니다</b> → <b>${REPO.name}</b> 고르기 <span style="opacity:.75">(“공개 저장소”로 두면 안 돼요)</span></li>
+      <li><b>권한</b> → 새로 생긴 <b>저장소</b> 칸의 ＋ → <b>콘텐츠: 읽기 및 쓰기</b></li>
+      <li><b>토큰 생성</b> → 나온 <code>github_pat_…</code>를 복사해서 아래에 붙여넣기</li>
     </ol>
     <a class="btn map" style="width:100%;margin-top:8px" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">🔗 GitHub 토큰 만들기 열기</a>
+    <p class="note" style="margin-top:6px">이미 만든 토큰을 고칠 땐 <a href="https://github.com/settings/personal-access-tokens" target="_blank" rel="noopener">내 토큰 목록</a> → 토큰 이름 → 편집 (토큰 값은 그대로예요)</p>
     <label class="j-label" for="shToken">토큰</label><input class="j-input" id="shToken" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_...">
     <label class="j-label" for="shPass">그룹 암호 (친구들이 입력할 말 · 8글자 이상, 숫자만은 안 돼요)</label><input class="j-input" id="shPass" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="우리만 아는 말 8글자 이상">
     <p class="note">토큰은 이 저장소 하나만 읽고 쓸 수 있어요(Fine-grained 토큰만 받아요). 초대 링크에는 암호로 잠근 토큰이 들어가요.</p>
-    <div class="j-actions"><button class="btn" data-jclose="1">취소</button><button class="btn primary" data-share-save="1">확인하고 만들기</button></div>`);
+    <div class="j-actions"><button class="btn" data-jclose="1">취소</button><button class="btn primary" data-share-save="1">만들기</button></div>`);
 }
 function openShareJoin(code = '') {
   const ua = navigator.userAgent, inApp = /KAKAOTALK|NAVER|Instagram|FBAN|FBAV|Line\//i.test(ua), iosBrowser = /iPhone|iPad|iPod/i.test(ua) && !isStandalone();
@@ -1314,8 +1315,8 @@ async function onShareClick(q) {
     if (!/^github_pat_\w{60,}$/.test(token)) { toast('Fine-grained 토큰(github_pat_…) 전체를 붙여넣어 주세요', 3500); return true; }
     if (pass.trim().length < 8 || /^\d+$/.test(pass.trim())) { toast('암호는 숫자만 말고 8글자 이상으로 정해 주세요', 3200); return true; }
     const c = new ShareClient(token);
-    try { if (!(await c.check())) { toast('토큰 권한이 달라요 — Fine-grained 토큰에 Contents: Read and write로 만들어 주세요', 4200); return true; } }
-    catch (err) { toast(err.status === 401 ? '토큰이 틀렸거나 만료됐어요 — Generate token 후 전체를 다시 복사해 주세요' : err.status === 404 ? `토큰이 ${REPO.name} 저장소를 못 봐요 — Repository access를 확인해 주세요` : '확인 실패 — 인터넷 연결을 확인해 주세요', 4200); return true; }
+    try { if (!(await c.check())) { toast('토큰 권한이 모자라요 — GitHub 내 토큰 목록 → 토큰 → 편집 → 권한 → 저장소 → 콘텐츠를 “읽기 및 쓰기”로 바꿔 주세요', 6000); return true; } }
+    catch (err) { toast(err.status === 401 ? '토큰이 틀렸거나 만료됐어요 — 토큰 생성 후 전체를 다시 복사해 주세요' : err.status === 404 ? `토큰이 ${REPO.name} 저장소를 못 봐요 — GitHub 내 토큰 목록 → 토큰 → 편집 → 저장소 액세스를 “저장소만 선택합니다 → ${REPO.name}”로 바꾸고 다시 눌러 주세요` : '확인 실패 — 인터넷 연결을 확인해 주세요', 6000); return true; }
     SH.client = c; store.set('share', { token }); SH.err = null;
     showInvite(await makeInvite(token, pass));
     syncShare({ quiet: false });
