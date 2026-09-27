@@ -2,7 +2,7 @@
 // Each version is an exact snapshot: every shipped file is precached (bypassing the HTTP cache) under a
 // cache named by the content hash, and served cache-first. Updates arrive only as a new sw.js; the page
 // shows an "업데이트" button that tells the waiting worker to take over, then reloads once.
-const VERSION = '130de675bc';
+const VERSION = 'abc5dd4b4b';
 const CACHE = 'mokbang6-' + VERSION;
 const CORE = [
   "./",
@@ -22,6 +22,7 @@ const CORE = [
   "./js/data/common.js",
   "./js/data/osaka.js",
   "./js/data/tokyo.js",
+  "./js/journal.js",
   "./js/landmarks.js",
   "./js/main.js",
   "./js/map.js",

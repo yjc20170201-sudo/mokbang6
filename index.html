@@ -247,12 +247,43 @@ button{font:inherit;color:inherit}
 .arrive span{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .arrive .go{background:#fff;color:var(--sea)}
 .arrive.update{background:var(--ai);top:auto;bottom:calc(var(--act-h) + 12px)}
+.arrive.pick{background:var(--lantern)}
 :root[data-theme="dark"] .arrive.update{color:#0c1219}
 .arrive .small-btn{flex:0 0 auto;color:var(--ink)}
 @media (min-width: 900px){.arrive{right:434px;max-width:420px}}
 .icon-btn.gps-wait{animation:bob 1s ease-in-out infinite}
 body.tap-mode #gl{cursor:crosshair}
 .origin .small-btn{margin-right:6px}
+.vh{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;overflow:hidden}
+.icon-btn.snap{background:var(--lantern);color:#fff;font-size:21px}
+.lbl.photo .ph{width:40px;height:40px;border-radius:12px;border:3px solid #fff;box-shadow:0 3px 10px rgba(0,0,0,.3);overflow:hidden;background:var(--panel-2);display:grid;place-items:center;font-size:18px}
+.lbl.photo .ph img{width:100%;height:100%;object-fit:cover;display:block}
+.j-title{font-family:var(--f-display);font-weight:400;font-size:24px;margin:0 0 4px}
+.rec-btns{display:flex;flex-direction:column;gap:8px;margin-top:14px}
+.rec-btns .btn{width:100%}
+.j-preview,.j-photo{width:100%;max-height:46vh;object-fit:contain;border-radius:14px;background:#000;display:block}
+.j-where{display:flex;flex-direction:column;gap:2px;margin:12px 0 4px}
+.j-where span{font-size:12.5px;color:var(--ink-3)}
+.j-where .small-btn{align-self:flex-start;margin-top:6px}
+.j-label{font-size:12px;font-weight:700;color:var(--ink-2);margin:12px 0 4px;display:block}
+.modal textarea{width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:12px;background:var(--panel-2);color:var(--ink);font:15px/1.5 var(--f-body);padding:10px;resize:vertical}
+.stars{display:flex;gap:2px}
+.star{border:0;background:none;font-size:32px;line-height:1;color:var(--line);cursor:pointer;padding:2px 4px}
+.star[aria-pressed="true"]{color:var(--gold)}
+.who{display:flex;flex-wrap:wrap;gap:6px}
+.who .chip{box-shadow:none;background:var(--panel-2);height:32px;font-size:12.5px}
+.who .chip[aria-pressed="true"]{background:var(--ink);color:var(--panel)}
+.j-actions{display:flex;gap:8px;margin-top:16px}
+.j-actions .btn{flex:1 1 0}
+.j-stars{color:var(--gold);font-size:20px;letter-spacing:2px}
+.small-btn.danger{color:var(--bad)}
+.album-h{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.album-h h3{margin:0}
+.album-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.album-item{position:relative;aspect-ratio:1;border:0;padding:0;border-radius:12px;overflow:hidden;background:var(--panel-2);cursor:pointer;max-width:100%;min-width:0}
+.album-item img{width:100%;height:100%;object-fit:cover;display:block}
+.album-item .cap{position:absolute;left:0;right:0;bottom:0;padding:14px 6px 4px;font-size:10.5px;font-weight:700;color:#fff;background:linear-gradient(transparent,rgba(0,0,0,.66));text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.memo-card{display:block;padding:8px 8px 20px;font-size:12px;text-align:left;color:var(--ink-2);height:100%;box-sizing:border-box;overflow:hidden}
 /* 3D labels */
 .lbl{position:absolute;transform:translate(-50%,-100%);pointer-events:auto;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px;user-select:none;-webkit-user-select:none}
 .lbl .bdg{display:flex;align-items:center;gap:5px;padding:4px 9px 4px 5px;border-radius:999px;background:var(--panel);box-shadow:0 3px 10px rgba(0,0,0,.22);font-weight:700;font-size:12px;white-space:nowrap;color:var(--ink)}
@@ -302,9 +333,11 @@ body.tap-mode #gl{cursor:crosshair}
 
   <div class="arrive" id="arrive" hidden role="status"><span id="arriveText"></span><button class="small-btn go" id="arriveGo">도착 ▶</button><button class="small-btn" id="arriveX" aria-label="알림 닫기">✕</button></div>
 
+  <div class="arrive pick" id="pickBar" hidden role="status"><span>👆 지도에서 위치를 탭하세요</span><button class="small-btn" id="pickCancel">취소</button></div>
   <div class="arrive update" id="updateBar" hidden role="status"><span>🔄 새 버전이 준비됐어요</span><button class="small-btn go" id="updateGo">업데이트</button></div>
 
   <div class="fabs" id="fabs">
+    <button class="icon-btn snap" id="snapBtn" title="사진·메모 남기기" aria-label="사진·메모 남기기">📸</button>
     <button class="icon-btn" id="followBtn" aria-pressed="true" title="원정대 따라가기" aria-label="원정대 따라가기">🎯</button>
     <button class="icon-btn" id="overviewBtn" title="오늘 동선 한눈에" aria-label="오늘 동선 한눈에">🗺️</button>
     <button class="icon-btn" id="hereBtn" aria-pressed="false" title="내 위치 (GPS)" aria-label="GPS로 내 위치 보기">📍</button>
@@ -319,6 +352,7 @@ body.tap-mode #gl{cursor:crosshair}
       <button class="tab" role="tab" data-tab="here" aria-selected="true">📍 여기</button>
       <button class="tab" role="tab" data-tab="plan" aria-selected="false">🗓️ 일정</button>
       <button class="tab" role="tab" data-tab="near" aria-selected="false">🍜 근처</button>
+      <button class="tab" role="tab" data-tab="album" aria-selected="false">📸 앨범</button>
       <button class="tab" role="tab" data-tab="tips" aria-selected="false">💡 꿀팁</button>
     </div>
     <div class="sheet-body" id="sheetBody"></div>
@@ -331,6 +365,9 @@ body.tap-mode #gl{cursor:crosshair}
 
   <div class="travel" id="travel" hidden></div>
   <div class="overlay" id="intro" hidden></div>
+  <div class="overlay" id="jModal" hidden></div>
+  <input type="file" id="fileCam" class="vh" accept="image/*" capture="environment" tabindex="-1" aria-hidden="true">
+  <input type="file" id="fileLib" class="vh" accept="image/*" multiple tabindex="-1" aria-hidden="true">
   <div class="toast" id="toast" role="status"></div>
   <div class="loading" id="loading"><div><span class="spin">🐙</span><span id="loadingText">지도 불러오는 중…</span></div></div>
 </div>

@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { World } from './world.js';
 import { CREW_DEFAULT } from './chars.js';
 import { CAT, KIND, LINES_BY_ACT, PHRASES, CHECKLIST, GROUP_TIPS } from './data/common.js';
+import * as J from './journal.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -188,6 +189,7 @@ async function loadRegionNow(rid, { quiet = false } = {}) {
     if (S.here && !S.here.gps && S.here.region !== rid) S.here = null; // a tapped spot belongs to the old map
     await world.loadRegion(geo, { ...C.regions[rid] }, { clear: () => clearZones() });
     if (S.here?.gps && S.here.region === rid) world.setMe(S.here.pos, S.here.acc);
+    refreshJournal();
   } catch (e) {
     toast('📴 지도를 못 불러왔어요 — 연결을 확인하고 다시 눌러 주세요', 3800);
     throw e;
@@ -464,7 +466,8 @@ function renderActions(next = C.days[S.day].stops[S.stop + 1]) {
 function renderBody(keepScroll = false) {
   document.querySelectorAll('.tab').forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === S.tab)));
   const b = $('#sheetBody');
-  b.innerHTML = S.tab === 'here' ? (S.viewPlace ? placeHTML(S.viewPlace, true) : hereHTML()) : S.tab === 'plan' ? planHTML() : S.tab === 'near' ? nearHTML() : tipsHTML();
+  b.innerHTML = S.tab === 'here' ? (S.viewPlace ? placeHTML(S.viewPlace, true) : hereHTML()) : S.tab === 'plan' ? planHTML() : S.tab === 'near' ? nearHTML() : S.tab === 'album' ? albumHTML() : tipsHTML();
+  hydrateThumbs(b);
   if (!keepScroll) b.scrollTop = 0;
 }
 function renderAll() { renderDays(); renderClock(); renderHead(); renderBody(); renderParty(); if (GPS.fix) { hideArrive(); checkArrival(); } }
@@ -507,6 +510,7 @@ function hereHTML() {
   return `${warnHTML}
     ${st.say ? `<div class="sec guide"><div class="face" aria-hidden="true">${crewDefs()[2].emoji}</div><div class="bubble"><b>${esc(crewDefs()[2].name)}</b> ${esc(st.say)}</div></div>` : ''}
     ${steps.length ? `<div class="sec"><h3>🧭 여기까지 가는 법</h3><ol class="steps">${steps.map(s => `<li><span class="n">${s.i}</span><span class="t">${s.t}${s.s ? `<small>${esc(s.s)}</small>` : ''}</span></li>`).join('')}</ol></div>` : ''}
+    ${journalStrip(p)}
     <div class="sec">${placeCore(p)}</div>
     ${p.cat === 'hotel' ? hotelHTML(p) : ''}
     ${allOpts.length ? `<div class="sec"><h3>🔁 근처 다른 선택지</h3>${allOpts.map(a => altRow(a, p)).join('')}${swapped ? `<button class="small-btn swap" data-unswap="1">원래 추천으로 되돌리기</button>` : ''}</div>` : ''}`;
@@ -607,6 +611,11 @@ function bindUI() {
     const q = s => e.target.closest(s);
     let b;
     if ((b = q('[data-jump]'))) return jumpTo(S.day, +b.dataset.jump);
+    if ((b = q('[data-rec-open]'))) return openRecorder();
+    if ((b = q('[data-entry]'))) return openEntry(b.dataset.entry);
+    if ((b = q('[data-share-day]'))) return shareDay(+b.dataset.shareDay, b);
+    if ((b = q('[data-track-toggle]'))) { JR.showTrack = !JR.showTrack; store.set('showTrack', JR.showTrack); refreshTrack(); renderBody(true); return; }
+    if ((b = q('[data-track-clear]'))) { if (b.dataset.sure) { JR.track = []; JR.lastPt = null; J.clearTrack().catch(() => {}); refreshTrack(); toast('발자취를 지웠어요'); renderBody(true); } else { b.dataset.sure = '1'; b.textContent = '정말 지울까요? 한 번 더'; } return; }
     if ((b = q('[data-place]'))) return openPlace(b.dataset.place);
     if ((b = q('[data-back]'))) { S.viewPlace = null; renderBody(); refreshMarkers(); world.setFollow(true); setFollowBtn(true); return; }
     if (busy && q('[data-swap],[data-unswap],[data-hotelpin],[data-hotelreset]')) { toast('이동이 끝나면 바꿀 수 있어요'); return; }
@@ -614,12 +623,12 @@ function bindUI() {
     if ((b = q('[data-unswap]'))) { store.set(`swap:${C.id}:${S.day}:${S.stop}`, null); showStop(); return; }
     if ((b = q('[data-filter]'))) { S.nearFilter = b.dataset.filter; renderBody(); return; }
     if ((b = q('[data-open]'))) { S.openNow = !S.openNow; renderBody(); return; }
-    if ((b = q('[data-sethere]'))) { setHereMode(true); return; }
+    if ((b = q('[data-sethere]'))) { if (JR.picking) cancelPick(); setHereMode(true); return; }
     if ((b = q('[data-clearhere]'))) { if (S.here?.gps) stopGPS(); S.here = null; refreshMarkers(); renderBody(); return; }
     if ((b = q('[data-gps]'))) { startGPS(); return; }
     if ((b = q('[data-gpsoff]'))) { stopGPS(); toast('GPS를 껐어요'); return; }
     if ((b = q('[data-install]'))) { const ev = installEvt; installEvt = null; ev?.prompt(); ev?.userChoice?.finally(() => renderBody()); return; }
-    if ((b = q('[data-hotelpin]'))) { S.pinHotel = true; setHereMode(true); toast('지도에서 숙소 위치를 탭하세요 🏨'); return; }
+    if ((b = q('[data-hotelpin]'))) { if (JR.picking) cancelPick(); S.pinHotel = true; setHereMode(true); toast('지도에서 숙소 위치를 탭하세요 🏨'); return; }
     if ((b = q('[data-hotelreset]'))) { store.set('hotel:' + C.id, null); const p = C.places[hotelId()]; if (p?._orig) Object.assign(p, p._orig); toast('예시 위치로 되돌렸어요'); showStop(); return; }
     if ((b = q('[data-copy]'))) { const p = PHRASES[+b.dataset.copy]; navigator.clipboard?.writeText(p.jp).then(() => toast('복사했어요 📋'), () => toast(p.jp)); return; }
   });
@@ -633,6 +642,13 @@ function bindUI() {
   $('#followBtn').onclick = () => { const on = !world.follow; world.setFollow(on); setFollowBtn(on); };
   $('#overviewBtn').onclick = () => { const pts = C.days[S.day].stops.map((_, si) => stopPlace(S.day, si)).filter(p => regionOf(p) === regionId).map(p => posOf(p, regionId)); world.overview(pts); setFollowBtn(false); };
   $('#hereBtn').onclick = () => startGPS();
+  $('#snapBtn').onclick = () => openRecorder();
+  $('#pickCancel').onclick = () => { const t = cancelPick(); if (t && t !== 'draft') openEntry(t); };
+  $('#fileCam').addEventListener('change', e => onFiles(e.target));
+  $('#fileLib').addEventListener('change', e => onFiles(e.target));
+  $('#jModal').addEventListener('click', onJournalClick);
+  $('#jModal').addEventListener('input', e => { if (e.target.id === 'jMemo' && JR.draft) JR.draft.entry.memo = e.target.value; });
+  $('#jModal').addEventListener('change', e => { if (e.target.id === 'jMemoEdit') updateEntry(e.target.closest('[data-entry-id]')?.dataset.entryId, { memo: e.target.value }); });
   $('#arriveGo').onclick = () => { hideArrive(); go(1); };
   $('#arriveX').onclick = () => { GPS.dismissed = $('#arrive').dataset.key; hideArrive(); };
   window.addEventListener('offline', () => toast('📴 오프라인이에요 — 저장된 지도·일정은 계속 볼 수 있어요', 3500));
@@ -645,6 +661,7 @@ function bindUI() {
   $('#partyTag').onclick = () => openIntro();
   world.onFollowChange = on => setFollowBtn(on);
   world.onMapTap = (hit) => {
+    if (JR.picking) { const [lat, lng] = world.region.toLatLng(hit.x, hit.z); applyPick(lat, lng); return; }
     if (!S.tapMode) return;
     const [lat, lng] = world.region.toLatLng(hit.x, hit.z);
     if (S.pinHotel) {
@@ -729,7 +746,7 @@ function onGPS(p) {
   if (S.here && !S.here.gps) { S.here = null; refreshMarkers(); }
   const { latitude: lat, longitude: lng, accuracy } = p.coords;
   const first = !GPS.fix;
-  GPS.fix = { lat, lng, acc: accuracy };
+  GPS.fix = { lat, lng, acc: accuracy }; GPS.fixAt = Date.now();
   setGpsBtn(true);
   const rid = regionAt(lat, lng);
   if (rid === 'none') {
@@ -739,6 +756,7 @@ function onGPS(p) {
     return;
   }
   const pos = proj(rid, lat, lng);
+  recordTrack(GPS.fix);
   S.here = { lat, lng, pos, region: rid, gps: true, acc: accuracy };
   if (rid === regionId) {
     world.setMe(pos, accuracy);
@@ -772,6 +790,336 @@ function showArrive(p, key) {
 }
 function hideArrive() { $('#arrive').hidden = true; }
 
+// ---------- trip journal: photos + memos + walked trail, kept on this phone ----------
+const JR = { ok: 'indexedDB' in window, entries: [], urls: new Map(), track: [], lastPt: null, showTrack: store.get('showTrack', true), who: store.get('who', 0), draft: null, loc: null, picking: null, prepared: null };
+const pad2 = n => String(n).padStart(2, '0');
+const fmtTime = t => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} (${DOW[d.getDay()]}) ${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+async function journalInit() {
+  if (!JR.ok) return;
+  try { JR.entries = await J.listEntries(); JR.track = (await J.listTrack()).sort((a, b) => a.t - b.t); JR.lastPt = JR.track[JR.track.length - 1] || null; }
+  catch (e) { console.warn('journal unavailable', e); JR.ok = false; return; }
+  refreshJournal();
+  if (C && (S.tab === 'album' || S.tab === 'here')) renderBody(true);
+}
+async function thumbURL(e) {
+  if (!e?.photo) return null;
+  if (JR.urls.has(e.id)) return JR.urls.get(e.id);
+  const b = await J.getBlob(e.id, 'thumb').catch(() => null);
+  if (!b) return null;
+  const u = URL.createObjectURL(b); JR.urls.set(e.id, u); return u;
+}
+async function hydrateThumbs(root) {
+  for (const img of root.querySelectorAll('img[data-thumb]')) {
+    const u = await thumbURL(JR.entries.find(e => e.id === img.dataset.thumb));
+    if (u && img.isConnected) img.src = u;
+  }
+}
+async function refreshJournal() { // photo pins + trail for the loaded map
+  if (!JR.ok || !C || !world.region) return;
+  const rid = regionId;
+  const here = JR.entries.filter(e => e.city === C.id && e.lat != null && regionAt(e.lat, e.lng) === rid).slice(-80);
+  const items = [];
+  for (const e of here) items.push({ pos: proj(rid, e.lat, e.lng), thumb: await thumbURL(e), emoji: '📝', onClick: () => JR.picking ? applyPick(e.lat, e.lng) : openEntry(e.id) });
+  if (rid !== regionId) return; // the map changed while thumbnails loaded
+  world.setPhotoPins(items);
+  refreshTrack();
+}
+const walkHop = (a, b) => { const d = dist(a, b), s = (b.t - a.t) / 1000; return d < 400 && s < 600 && d / Math.max(1, s) < 2.5; };
+function trackSegments() {
+  const segs = []; let cur = [], prev = null;
+  for (const p of JR.track) {
+    if (p.city !== C.id || regionAt(p.lat, p.lng) !== regionId) { if (cur.length > 1) segs.push(cur); cur = []; prev = null; continue; }
+    if (prev && !walkHop(prev, p)) { if (cur.length > 1) segs.push(cur); cur = []; }
+    cur.push(p); prev = p;
+  }
+  if (cur.length > 1) segs.push(cur);
+  return segs;
+}
+function refreshTrack() {
+  if (!C || !world.region) return;
+  world.setTrack(JR.showTrack ? trackSegments().map(s => s.map(p => proj(regionId, p.lat, p.lng))) : []);
+}
+function walkedKm() {
+  let m = 0, prev = null;
+  for (const p of JR.track) { if (p.city !== C.id) continue; if (prev && walkHop(prev, p)) m += dist(prev, p); prev = p; }
+  return m / 1000;
+}
+function recordTrack(fix) {
+  if (!JR.ok || !C || !(fix.acc <= 60)) return;
+  const p = { lat: fix.lat, lng: fix.lng, acc: Math.round(fix.acc), t: Date.now(), city: C.id };
+  if (JR.lastPt && JR.lastPt.city === p.city && dist(JR.lastPt, p) < Math.max(25, (p.acc + (JR.lastPt.acc || 0)) / 2)) return;
+  JR.lastPt = p; JR.track.push(p);
+  J.addTrackPoint(p).catch(() => {});
+  clearTimeout(JR.trackTimer); JR.trackTimer = setTimeout(refreshTrack, 3000);
+}
+function nearestPlace(lat, lng) {
+  let best = null, bd = 160;
+  for (const p of Object.values(C.places)) { if (p.lat == null) continue; const d = dist({ lat, lng }, p); if (d < bd) { bd = d; best = p; } }
+  return best;
+}
+function getLocation() { // best effort, never rejects; started when 📷 is tapped
+  if (GPS.fix && Date.now() - (GPS.fixAt || 0) < 120000) return Promise.resolve({ ...GPS.fix, src: 'gps' });
+  if (!gpsAvailable()) return Promise.resolve(null);
+  return new Promise(res => navigator.geolocation.getCurrentPosition(
+    p => res({ lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy, src: 'gps' }),
+    () => res(null), { enableHighAccuracy: true, timeout: 60000, maximumAge: 60000 }));
+}
+const waitLoc = p => Promise.race([p || getLocation(), sleep(5000).then(() => (GPS.fix && Date.now() - (GPS.fixAt || 0) < 120000 ? { ...GPS.fix, src: 'gps' } : null))]);
+function trackAt(t) { // the trail point closest in time (±15 min)
+  let b = null;
+  for (const p of JR.track) if (p.city === C.id && Math.abs(p.t - t) < 9e5 && (!b || Math.abs(p.t - t) < Math.abs(b.t - t))) b = p;
+  return b && { lat: b.lat, lng: b.lng, acc: b.acc, src: 'track' };
+}
+function dayOf(t) { // trip day from the photo's time when a start date is set
+  const d0 = tripDate(0); if (!d0) return S.day;
+  d0.setHours(0, 0, 0, 0); const d = new Date(t); d.setHours(0, 0, 0, 0);
+  const i = Math.round((d - d0) / 864e5);
+  return i >= 0 && i < C.days.length ? i : S.day;
+}
+const planLoc = () => { const p = stopPlace(); return { lat: p.lat, lng: p.lng, acc: null, src: 'plan' }; };
+function makeDraft(img, loc, { cam = true } = {}) {
+  const ex = img?.exif;
+  const t = ex?.time && Math.abs(Date.now() - ex.time) < 400 * 864e5 ? ex.time : Date.now();
+  const recent = Date.now() - t < 10 * 60000;
+  // where: the photo's own GPS > our trail at that time > the phone's position now (only for fresh shots) > today's plan
+  const where = ex?.lat != null ? { lat: ex.lat, lng: ex.lng, acc: 30, src: 'exif' }
+    : (!cam && !recent) ? (trackAt(t) || { lat: null, lng: null, acc: null, src: 'none' })
+    : (loc || trackAt(t) || planLoc());
+  const np = where.lat != null ? nearestPlace(where.lat, where.lng) : null;
+  const day = dayOf(t);
+  return { img, entry: { id: J.newId(), t, city: C.id, day, stop: day === S.day ? S.stop : 0, lat: where.lat, lng: where.lng, acc: where.acc ?? null, src: where.src,
+    placeId: np?.id || null, placeName: np?.nameKo || (where.src === 'plan' ? stopPlace().nameKo : where.src === 'none' ? '위치 모름 (지도에서 고쳐 주세요)' : '길 위 어딘가'), memo: '', rating: 0, who: JR.who, photo: !!img } };
+}
+function cancelPick() {
+  const t = JR.picking; JR.picking = null; document.body.classList.remove('tap-mode'); $('#pickBar').hidden = true;
+  if (t === 'draft' && JR.draft) $('#jModal').hidden = false;
+  return t;
+}
+function openRecorder() {
+  if (!C) return;
+  if (!JR.ok) { toast('이 화면에선 기록을 저장할 수 없어요'); return; }
+  if (JR.draft) { cancelPick(); renderEditor(); toast('저장 안 한 사진이 있어요 — 먼저 저장하거나 취소해 주세요', 3000); return; }
+  if (JR.busy) return;
+  const el = $('#jModal');
+  el.innerHTML = `<div class="modal jrec" role="dialog" aria-label="기록 남기기">
+    <h2 class="j-title">📸 여기서 한 장!</h2>
+    <p class="note">사진·메모에 위치, 시간, 가게 이름이 같이 저장돼요. 이 폰에만 보관돼요.</p>
+    <div class="rec-btns">
+      <button class="btn primary" data-rec="cam">📷 사진 찍기</button>
+      <p class="note" style="margin:0">앱에서 찍은 사진은 폰 사진앱에 자동 저장이 안 돼요. 나중에 📤 공유 → '이미지 저장'으로 옮겨 두세요.</p>
+      <button class="btn" data-rec="lib">🖼️ 앨범에서 고르기 (여러 장 OK)</button>
+      <button class="btn" data-rec="memo">📝 메모만 남기기</button>
+    </div>
+    <button class="small-btn" data-jclose="1" style="margin-top:14px">닫기</button></div>`;
+  el.hidden = false; el.dataset.mode = 'rec';
+}
+async function onFiles(input) {
+  const list = [...(input.files || [])], cam = input.id === 'fileCam'; input.value = '';
+  if (!list.length || JR.busy) return;
+  JR.busy = true;
+  $('#jModal').innerHTML = '<div class="modal"><p class="note" style="margin:0">📸 사진 정리 중…</p></div>'; $('#jModal').dataset.mode = 'busy';
+  try {
+    if (list.length === 1) return await startDraft(list[0], cam);
+    const loc = cam ? await waitLoc(JR.loc) : null; JR.loc = null;
+    let n = 0;
+    for (const f of list) {
+      try { const d = makeDraft(await J.processImage(f), loc, { cam }); if (cam) d.orig = f; await saveDraft(d); n++; } catch (e) { console.warn(e); }
+    }
+    closeJModal();
+    toast(n ? `📸 ${n}장 저장했어요` : '사진을 저장하지 못했어요', 3000);
+    refreshJournal(); if (S.tab === 'album' || S.tab === 'here') renderBody(true);
+  } finally { JR.busy = false; }
+}
+async function startDraft(file, cam = true) {
+  let img = null;
+  if (file) {
+    try { img = await J.processImage(file); } catch { closeJModal(); toast('사진을 못 읽었어요. 다른 사진으로 해 보세요', 3000); return; }
+  }
+  const loc = img?.exif?.lat != null || (file && !cam) ? null : await waitLoc(JR.loc);
+  JR.loc = null;
+  JR.draft = makeDraft(img, loc, { cam: !file || cam });
+  if (file && cam) JR.draft.orig = file; // keep the camera original (full size + EXIF) for sharing/saving
+  renderEditor();
+}
+function renderEditor() {
+  const { img, entry: e } = JR.draft, el = $('#jModal');
+  if (JR.draftURL) URL.revokeObjectURL(JR.draftURL);
+  JR.draftURL = img ? URL.createObjectURL(img.full) : null;
+  const srcTxt = { gps: `📡 GPS${e.acc ? ' ±' + Math.round(e.acc) + 'm' : ''}`, exif: '📷 사진에 담긴 위치', track: '👣 그 시간 걸은 길 위치', plan: '🗓️ 일정 위치 (대략)', tap: '👆 지도에서 고른 위치', none: '❓ 위치 정보 없음' }[e.src] || '';
+  el.innerHTML = `<div class="modal jedit" role="dialog" aria-label="기록 저장">
+    ${img ? `<img class="j-preview" src="${JR.draftURL}" alt="찍은 사진">` : '<h2 class="j-title">📝 메모 남기기</h2>'}
+    <div class="j-where"><b>📍 ${esc(e.placeName)}</b><span>${srcTxt} · ${fmtTime(e.t)}</span><button class="small-btn" data-jfix="draft">👆 지도에서 위치 고치기</button></div>
+    <label class="j-label" for="jMemo">메모</label>
+    <textarea id="jMemo" rows="3" maxlength="300" placeholder="예: 우설 미쳤음, 다음에 또 오자">${esc(e.memo)}</textarea>
+    <div class="j-label">별점</div><div class="stars" role="group" aria-label="별점">${[1, 2, 3, 4, 5].map(n => `<button class="star" data-star="${n}" aria-pressed="${e.rating >= n}" aria-label="별 ${n}개">★</button>`).join('')}</div>
+    <div class="j-label">누가 남겼어?</div><div class="who">${crewDefs().map((d, i) => `<button class="chip" data-who="${i}" aria-pressed="${e.who === i}">${d.emoji} ${esc(d.name)}</button>`).join('')}</div>
+    <div class="j-actions"><button class="btn" data-jcancel="1">취소</button><button class="btn primary" data-jsave="1">💾 저장</button></div></div>`;
+  el.hidden = false; el.dataset.mode = 'edit';
+}
+async function saveDraft(d) {
+  const e = d.entry;
+  await J.saveEntry(e, d.img ? { full: d.img.full, thumb: d.img.thumb, orig: d.orig || null } : {});
+  if (!JR.entries.some(x => x.id === e.id)) JR.entries.push(e);
+  JR.entries.sort((a, b) => a.t - b.t);
+  if (!JR.persistAsked) { JR.persistAsked = true; navigator.storage?.persist?.().catch(() => {}); }
+  return e;
+}
+async function updateEntry(id, patch) {
+  const e = JR.entries.find(x => x.id === id); if (!e) return;
+  Object.assign(e, patch);
+  try { await J.saveEntry(e); } catch { toast('저장 실패 — 저장공간을 확인해 주세요'); }
+}
+function closeJModal() {
+  if (JR.picking) { JR.picking = null; document.body.classList.remove('tap-mode'); $('#pickBar').hidden = true; }
+  const el = $('#jModal'); el.hidden = true; el.innerHTML = ''; el.dataset.mode = '';
+  if (JR.draftURL) { URL.revokeObjectURL(JR.draftURL); JR.draftURL = null; }
+  if (JR.viewURL) { URL.revokeObjectURL(JR.viewURL); JR.viewURL = null; }
+  JR.draft = null; JR.viewFile = null;
+}
+function startPick(target) {
+  S.pinHotel = false; if (S.tapMode) setHereMode(false);
+  JR.picking = target; $('#jModal').hidden = true; $('#pickBar').hidden = false;
+  document.body.classList.add('tap-mode');
+  if (innerWidth < 900) setSheet('peek');
+  toast('지도를 탭해서 사진 찍은 곳을 고르세요 👆', 3500);
+}
+async function applyPick(lat, lng) {
+  const target = JR.picking; JR.picking = null; document.body.classList.remove('tap-mode'); $('#pickBar').hidden = true;
+  const np = nearestPlace(lat, lng);
+  const patch = { lat, lng, acc: null, src: 'tap', placeId: np?.id || null, placeName: np?.nameKo || '길 위 어딘가' };
+  if (target === 'draft' && JR.draft) { Object.assign(JR.draft.entry, patch); renderEditor(); return; }
+  await updateEntry(target, patch); refreshJournal(); openEntry(target);
+}
+async function openEntry(id) {
+  if (JR.picking === 'draft' && JR.draft) { cancelPick(); return; } // never drop an unsaved photo
+  if (JR.picking) cancelPick();
+  const e = JR.entries.find(x => x.id === id); if (!e) return;
+  let url = null, file = null;
+  if (e.photo) {
+    const b = await J.getBlob(e.id, 'full').catch(() => null);
+    const o = await J.getBlob(e.id, 'orig').catch(() => null);
+    if (b) url = URL.createObjectURL(b);
+    if (o || b) file = new File([o || b], `mokbang6-${isoDate(new Date(e.t))}-${e.id.slice(-5)}.jpg`, { type: 'image/jpeg' });
+  }
+  closeJModal();
+  JR.viewURL = url; JR.viewFile = file;
+  const who = crewDefs()[e.who];
+  const el = $('#jModal');
+  el.innerHTML = `<div class="modal jview" role="dialog" aria-label="기록 보기" data-entry-id="${e.id}">
+    ${url ? `<img class="j-photo" src="${url}" alt="${esc(e.placeName)}에서 찍은 사진">` : ''}
+    <div class="j-where"><b>📍 ${esc(e.placeName)}</b><span>${fmtTime(e.t)}${who ? ' · ' + who.emoji + ' ' + esc(who.name) : ''}</span></div>
+    ${e.rating ? `<div class="j-stars" aria-label="별점 ${e.rating}점">${'★'.repeat(e.rating)}${'☆'.repeat(5 - e.rating)}</div>` : ''}
+    <label class="j-label" for="jMemoEdit">메모</label>
+    <textarea id="jMemoEdit" rows="3" maxlength="300" placeholder="메모 추가">${esc(e.memo)}</textarea>
+    <div class="links" style="margin-top:10px">
+      <button class="small-btn" data-jshare="${e.id}">📤 공유 · 사진앱 저장</button>
+      <button class="small-btn" data-jmap="${e.id}">🗺️ 지도에서 보기</button>
+      ${e.lat != null ? `<a href="https://www.google.com/maps/search/?api=1&query=${e.lat.toFixed(6)},${e.lng.toFixed(6)}" target="_blank" rel="noopener">🧭 구글맵</a>` : ''}
+      <button class="small-btn" data-jfix="${e.id}">👆 위치 고치기</button>
+      <button class="small-btn danger" data-jdel="${e.id}">🗑️ 삭제</button>
+    </div>
+    <div class="j-actions"><button class="btn primary" data-jclose="1">닫기</button></div></div>`;
+  el.hidden = false; el.dataset.mode = 'view';
+}
+function shareText(list) {
+  return list.map(e => `📍 ${e.placeName} · ${fmtTime(e.t)}${e.rating ? ' ' + '★'.repeat(e.rating) : ''}${e.memo ? '\n' + e.memo : ''}${e.lat != null ? `\nhttps://maps.google.com/?q=${e.lat.toFixed(6)},${e.lng.toFixed(6)}` : ''}`).join('\n\n');
+}
+async function shareFiles(files, text) {
+  try {
+    if (files.length && !navigator.canShare?.({ files })) { toast('이 화면에선 사진 공유가 안 돼요. 설치한 앱이나 사파리·크롬에서 해 보세요', 3500); return; }
+    if (files.length) await navigator.share({ files, text, title: '6인 먹방원정대' });
+    else if (navigator.share) await navigator.share({ text, title: '6인 먹방원정대' });
+    else { await navigator.clipboard.writeText(text); toast('기록을 복사했어요 📋 (이 화면에선 사진 공유가 안 돼요)', 3500); }
+  } catch (err) { if (err?.name !== 'AbortError') toast('공유가 안 되는 화면이에요. 설치한 앱이나 사파리·크롬에서 해 보세요', 3500); }
+}
+const shareLabel = p => p.batches.length > 1 ? `📤 지금 공유 ${p.i + 1}/${p.batches.length} 묶음` : `📤 지금 공유하기 (${p.batches[0]?.length || 0}장)`;
+async function shareDay(day, btn) { // two taps: prepare (reads the photos), then share within the tap; 10 photos per share (Android limit)
+  const list = JR.entries.filter(e => e.city === C.id && e.day === day);
+  if (JR.prepared?.day === day) {
+    const p = JR.prepared, part = p.batches[p.i++];
+    if (p.i >= p.batches.length) { JR.prepared = null; btn.textContent = '📤 이 날 사진 공유'; } else btn.textContent = shareLabel(p);
+    return shareFiles(part || [], p.i === 1 ? p.text : `🍜 ${day + 1}일차 사진 (${p.i}/${p.batches.length})`);
+  }
+  btn.textContent = '준비 중…';
+  const files = [];
+  for (const e of list) if (e.photo) {
+    const b = await J.getBlob(e.id, 'orig').catch(() => null) || await J.getBlob(e.id, 'full').catch(() => null);
+    if (b) files.push(new File([b], `mokbang6-d${day + 1}-${files.length + 1}.jpg`, { type: 'image/jpeg' }));
+  }
+  const batches = []; for (let i = 0; i < files.length; i += 10) batches.push(files.slice(i, i + 10));
+  JR.prepared = { day, batches, i: 0, text: `🍜 6인 먹방원정대 ${day + 1}일차\n\n` + shareText(list) };
+  btn.textContent = shareLabel(JR.prepared);
+}
+async function onJournalClick(e) {
+  const el = $('#jModal'), q = s => e.target.closest(s);
+  let b;
+  if (e.target === el && el.dataset.mode !== 'edit') return closeJModal();
+  if (q('[data-jclose]')) return closeJModal();
+  if ((b = q('[data-jcancel]'))) {
+    if (JR.draft?.img && !b.dataset.sure) { b.dataset.sure = '1'; b.textContent = '사진 버릴까요? 한 번 더'; return; }
+    return closeJModal();
+  }
+  if ((b = q('[data-rec]'))) {
+    if (JR.busy) return;
+    const how = b.dataset.rec;
+    if (how === 'memo') { JR.loc = getLocation(); return startDraft(null); }
+    JR.loc = getLocation(); // ask for the position while the camera is open
+    return (how === 'cam' ? $('#fileCam') : $('#fileLib')).click();
+  }
+  if ((b = q('[data-star]')) && JR.draft) { const n = +b.dataset.star; JR.draft.entry.rating = JR.draft.entry.rating === n ? 0 : n; el.querySelectorAll('[data-star]').forEach(s => s.setAttribute('aria-pressed', String(JR.draft.entry.rating >= +s.dataset.star))); return; }
+  if ((b = q('[data-who]')) && JR.draft) { JR.draft.entry.who = +b.dataset.who; el.querySelectorAll('[data-who]').forEach(s => s.setAttribute('aria-pressed', String(s === b))); return; }
+  if ((b = q('[data-jfix]'))) return startPick(b.dataset.jfix);
+  if (q('[data-jsave]') && JR.draft) {
+    if (JR.saving) return;
+    const d = JR.draft; d.entry.memo = $('#jMemo')?.value.trim() || '';
+    JR.saving = true;
+    try { await saveDraft(d); } catch (err) { console.warn(err); toast('저장 실패 — 폰 저장공간을 확인해 주세요', 3500); return; } finally { JR.saving = false; }
+    JR.who = d.entry.who; store.set('who', JR.who);
+    closeJModal(); toast(d.entry.photo ? '📸 저장했어요!' : '📝 저장했어요!');
+    if (d.entry.lat != null && regionAt(d.entry.lat, d.entry.lng) === regionId) world.pop(d.entry.photo ? '📸' : '📝', proj(regionId, d.entry.lat, d.entry.lng), 3);
+    refreshJournal(); if (S.tab === 'album' || S.tab === 'here') renderBody(true);
+    return;
+  }
+  if ((b = q('[data-jshare]'))) { const x = JR.entries.find(v => v.id === b.dataset.jshare); return shareFiles(JR.viewFile ? [JR.viewFile] : [], shareText([x])); }
+  if ((b = q('[data-jmap]'))) {
+    const x = JR.entries.find(v => v.id === b.dataset.jmap); closeJModal();
+    if (x?.lat != null && regionAt(x.lat, x.lng) === regionId) { world.focus(proj(regionId, x.lat, x.lng), 600); world.follow = false; setFollowBtn(false); }
+    else toast('이 기록은 다른 지역 지도에 있어요 (그날 일정을 열면 보여요)', 3200);
+    return;
+  }
+  if ((b = q('[data-jdel]'))) {
+    if (!b.dataset.sure) { b.dataset.sure = '1'; b.textContent = '정말 삭제? 한 번 더 누르세요'; return; }
+    const id = b.dataset.jdel;
+    try { await J.deleteEntry(id); } catch { toast('삭제 실패'); return; }
+    JR.entries = JR.entries.filter(v => v.id !== id);
+    const u = JR.urls.get(id); if (u) { URL.revokeObjectURL(u); JR.urls.delete(id); }
+    closeJModal(); toast('🗑️ 삭제했어요'); refreshJournal(); if (S.tab === 'album' || S.tab === 'here') renderBody(true);
+  }
+}
+function journalStrip(p) {
+  if (!JR.ok) return '';
+  const list = JR.entries.filter(e => e.placeId === p.id);
+  return `<div class="sec"><div class="album-h"><h3>📸 여기 기록${list.length ? ' ' + list.length : ''}</h3><button class="small-btn" data-rec-open="1">📸 남기기</button></div>
+    ${list.length ? `<div class="album-grid">${list.slice(-6).map(albumItem).join('')}</div>` : ''}</div>`;
+}
+function albumItem(e) {
+  return `<button class="album-item" data-entry="${e.id}">${e.photo ? '<img data-thumb="' + e.id + '" alt="">' : `<span class="memo-card">📝 ${esc((e.memo || '메모').slice(0, 40))}</span>`}<span class="cap">${fmtTime(e.t).split(' ').pop()} · ${esc(short(e.placeName, 10))}${e.rating ? ' ' + '★'.repeat(e.rating) : ''}</span></button>`;
+}
+function albumHTML() {
+  if (!JR.ok) return '<p class="note">이 브라우저에선 사진·메모 저장을 쓸 수 없어요.</p>';
+  const mine = JR.entries.filter(e => e.city === C.id), photos = mine.filter(e => e.photo).length;
+  const head = `<div class="day-hero"><h2>📸 우리 여행 기록</h2><p>사진 ${photos}장 · 메모 ${mine.length - photos}개 · 걸은 길 ${walkedKm().toFixed(1)}km</p>
+    <button class="btn primary" style="height:44px;font-size:16px;margin-top:8px" data-rec-open="1">📸 사진·메모 남기기</button>
+    <div class="links" style="margin-top:8px"><button class="small-btn" data-track-toggle="1">👣 발자취 ${JR.showTrack ? '숨기기' : '보기'}</button>${JR.track.length ? '<button class="small-btn" data-track-clear="1">발자취 지우기</button>' : ''}</div>
+    <p class="note">📡 GPS를 켜 두면 걸은 길이 지도에 파란 점선으로 남아요. 사진은 이 폰에만 저장되니 📤 공유로 단톡방이나 사진앱에도 옮겨 두세요.${isPWA() && !isStandalone() ? (mine.length ? ' 앱으로 설치해도 지금까지 기록은 옮겨지지 않아요 — 설치 전에 날짜별 📤 공유로 사진앱에 저장해 두세요.' : ' 홈 화면에 앱으로 먼저 설치하고 기록을 시작하면 사진이 더 안전하게 보관돼요.') : ''}</p></div>`;
+  if (!mine.length) return head + '<div class="card"><p>아직 기록이 없어요. 지도 오른쪽 빨간 📸 버튼으로 첫 사진을 남겨 보세요!</p></div>';
+  const groups = new Map();
+  for (const e of mine) { if (!groups.has(e.day)) groups.set(e.day, []); groups.get(e.day).push(e); }
+  return head + [...groups.entries()].sort((a, b) => a[0] - b[0]).map(([d, list]) => `<div class="sec album-day">
+    <div class="album-h"><h3>${d + 1}일차 · ${esc(C.days[d]?.chip || '')}</h3>${list.some(e => e.photo) ? `<button class="small-btn" data-share-day="${d}">${JR.prepared?.day === d ? shareLabel(JR.prepared) : '📤 이 날 사진 공유'}</button>` : ''}</div>
+    <div class="album-grid">${list.map(albumItem).join('')}</div></div>`).join('');
+}
+
 // ---------- install as an app (GitHub Pages build only) ----------
 let installEvt = null;
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (S.tab === 'tips' && C) renderBody(); });
@@ -803,7 +1151,7 @@ function installHTML() {
   const ua = navigator.userAgent, ios = /iPhone|iPad|iPod/i.test(ua), inApp = /KAKAOTALK|NAVER|Instagram|FBAN|FBAV|Line\//i.test(ua);
   const how = installEvt ? `<p>버튼 한 번이면 홈 화면에 아이콘이 생겨요.</p><button class="btn primary" style="margin-top:10px;width:100%" data-install="1">📲 설치하기</button>`
     : inApp ? `<p>카톡·네이버 안에서는 설치가 안 돼요. 오른쪽 아래(또는 위) <b>⋯ 메뉴 → 다른 브라우저로 열기</b>를 누른 뒤 설치하세요.</p>`
-    : ios ? `<p>사파리 아래쪽 <b>공유 버튼(□↑)</b> → <b>홈 화면에 추가</b>를 누르세요. 설치한 앱은 와이파이에서 한 번 열어 두세요 (이름표·숙소 설정은 앱에서 다시 입력).</p>`
+    : ios ? `<p>사파리 아래쪽 <b>공유 버튼(□↑)</b> → <b>홈 화면에 추가</b>를 누르세요. 설치한 앱은 와이파이에서 한 번 열어 두세요. 이름표·숙소 설정과 사진 기록은 앱으로 옮겨지지 않으니 여행 전에 설치하세요.</p>`
     : `<p>크롬 오른쪽 위 <b>⋮ 메뉴 → 앱 설치</b> (또는 홈 화면에 추가)를 누르세요.</p>`;
   return `<div class="sec card install"><h4>📲 폰에 앱으로 설치</h4>${how}<p class="note" style="margin-top:6px">설치하면 전체화면·오프라인·GPS가 다 돼요.</p></div>`;
 }
@@ -888,6 +1236,7 @@ async function loadCity(id, fresh) {
   world.setCrew(crewDefs());
   bindUI();
   if ('serviceWorker' in navigator && isPWA()) setupSW();
+  journalInit();
   if (!S.city) { $('#loading').hidden = true; openIntro(true); return; }
   try { await loadCity(S.city, false); } catch (e) { console.error(e); $('#loadingText').textContent = '불러오기 실패 — 새로고침 해주세요'; }
 })();

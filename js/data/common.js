@@ -11,7 +11,7 @@ export const CAT = {
   sight: { e: '📸', n: '구경', g: 'see' }, onsen: { e: '♨️', n: '온천', g: 'see' }, diving: { e: '🤿', n: '프리다이빙', g: 'see' },
   pool: { e: '🏊', n: '다이빙풀', g: 'see' }, tennis: { e: '🎾', n: '테니스', g: 'see' }, hotel: { e: '🏨', n: '숙소', g: 'see' },
   station: { e: '🚉', n: '역', g: 'see' }, airport: { e: '✈️', n: '공항', g: 'see' }, shop: { e: '🛍️', n: '쇼핑', g: 'shop' },
-  brewery: { e: '🍶', n: '양조장', g: 'see' },
+  brewery: { e: '🍶', n: '양조장', g: 'see' }, sportshop: { e: '🎾', n: '테니스 용품', g: 'shop' },
 };
 
 export const KIND = {

@@ -239,6 +239,27 @@ export class World {
   }
   clearMe() { if (!this.me) return; this.scene.remove(this.me.g); this.me.g.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); }); this.removeLabel(this.me.label); this.me = null; }
 
+  // ---------- journal: photo pins + walked trail ----------
+  setPhotoPins(items) { // items: {pos, thumb (url|null), emoji, onClick}
+    for (const L of [...this.labels]) if (L.kind === 'photo') this.removeLabel(L);
+    for (const it of items) {
+      const inner = it.thumb ? `<img src="${it.thumb}" alt="" loading="lazy">` : `<span>${it.emoji || '📝'}</span>`;
+      const L = this.addLabel({ html: `<div class="ph">${inner}</div>`, cls: 'photo', pos: it.pos.clone().setY(30), onClick: it.onClick, maxDist: 5000 });
+      L.kind = 'photo';
+    }
+  }
+  setTrack(segments) { // segments: arrays of Vector3 (already projected to this region)
+    if (this.trackGroup) { this.trackGroup.children.forEach(o => { o.geometry.dispose(); o.material.dispose(); }); this.scene.remove(this.trackGroup); }
+    this.trackGroup = new THREE.Group(); this.scene.add(this.trackGroup);
+    for (const seg of segments) {
+      if (seg.length < 2) continue;
+      const curve = new THREE.CatmullRomCurve3(seg.map(p => p.clone().setY(0)), false, 'centripetal', 0.2);
+      const mat = new THREE.MeshBasicMaterial({ color: '#1a8fd6', map: this.dashTex, transparent: true, opacity: 0.9, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -5 });
+      const m = ribbonMesh(curve, Math.max(8, Math.round(curve.getLength() / 15)), 7, '#1a8fd6', 7, null, { material: mat, dash: 40 });
+      this.trackGroup.add(m);
+    }
+  }
+
   // ---------- route ribbons ----------
   clearRoute() { this.routeGroup.children.forEach(o => { o.geometry.dispose(); o.material.dispose(); }); this.routeGroup.clear(); }
   addRoute(points, { color = '#e0442f', dashed = true, width = 10, done = false } = {}) {
