@@ -1260,21 +1260,37 @@ function shareCardHTML() {
     <div class="links" style="margin-top:8px"><button class="small-btn" data-share-sync="1">🔄 지금 동기화</button><button class="small-btn" data-share-invite="1">📨 친구 초대 링크</button><button class="small-btn" data-share-leave="1">연결 끊기</button></div></div>`;
 }
 function shareModal(html) { const el = $('#jModal'); closeJModal(); el.innerHTML = `<div class="modal jshare" role="dialog" aria-label="공유 앨범">${html}</div>`; el.hidden = false; el.dataset.mode = 'share'; }
+async function showRepoDiag(c) {
+  const box = $('#shDiag'); if (!box) return;
+  let seen = null; try { seen = await c.visibleRepos(); } catch { /* fall back to the generic hint */ }
+  const fix = `GitHub <a href="https://github.com/settings/personal-access-tokens" target="_blank" rel="noopener">내 토큰 목록</a> → 이 토큰 → <b>편집</b> → <b>저장소 액세스</b>를 <b>저장소만 선택합니다</b>로 바꾸고 <b>${REPO.name}</b>에 체크 → 권한에 <b>콘텐츠: 읽기 및 쓰기</b> → 맨 아래 저장. 편집이 안 보이면 이 토큰은 지우고 위 버튼으로 새로 만들어요.`;
+  let what;
+  if (!seen) what = `이 토큰은 <b>${REPO.name}</b> 저장소를 못 봐요.`;
+  else if (!seen.length) what = `이 토큰에 <b>선택된 저장소가 하나도 없어요</b>.`;
+  else {
+    const priv = seen.filter(r => r.priv), list = seen.slice(0, 6).map(r => `${esc(r.owner)}/${esc(r.name)}${r.priv ? ' 🔒' : ''}`).join(', ') + (seen.length > 6 ? ` 외 ${seen.length - 6}개` : '');
+    what = priv.length ? `이 토큰이 보는 저장소: <b>${list}</b> — <b>${REPO.name}</b>이 빠져 있어요.`
+      : `이 토큰은 <b>공개 저장소만</b> 봐요 (${list}). 사진 저장소는 비공개라 안 보여요.`;
+  }
+  box.innerHTML = `<div class="card warn-soft" style="margin-top:12px"><p><b>⚠️ 토큰 설정이 달라요</b></p><p style="margin-top:4px">${what}</p><p class="note" style="margin-top:6px">${fix}</p></div>`;
+  box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
 function openShareCreate() {
   shareModal(`<h2 class="j-title">👑 공유 앨범 만들기</h2>
     <p class="note">방장 한 명만 하면 돼요. 사진은 형님 GitHub의 <b>비공개</b> 저장소 <b>${REPO.name}</b>에 모여요.</p>
     <ol class="mini-steps">
-      <li>아래 버튼으로 GitHub 토큰 만들기 화면을 열어요 (GitHub 로그인).</li>
-      <li><b>토큰 이름</b>: mokbang6 · <b>만료</b>: 여행 끝나는 날 이후로</li>
+      <li>아래 버튼으로 GitHub 토큰 만들기 화면을 열어요 (이름·만료·권한은 미리 채워져요).</li>
+      <li><b>만료</b>가 여행 끝나는 날 이후인지 확인</li>
       <li><b>저장소 액세스</b> → <b>저장소만 선택합니다</b> → <b>${REPO.name}</b> 고르기 <span style="opacity:.75">(“공개 저장소”로 두면 안 돼요)</span></li>
-      <li><b>권한</b> → 새로 생긴 <b>저장소</b> 칸의 ＋ → <b>콘텐츠: 읽기 및 쓰기</b></li>
+      <li><b>권한</b> → <b>저장소</b> 칸에 <b>콘텐츠: 읽기 및 쓰기</b>가 있는지 확인 (없으면 ＋로 추가)</li>
       <li><b>토큰 생성</b> → 나온 <code>github_pat_…</code>를 복사해서 아래에 붙여넣기</li>
     </ol>
-    <a class="btn map" style="width:100%;margin-top:8px" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">🔗 GitHub 토큰 만들기 열기</a>
+    <a class="btn map" style="width:100%;margin-top:8px" href="https://github.com/settings/personal-access-tokens/new?name=mokbang6-album&description=%EB%A8%B9%EB%B0%A9%EC%9B%90%EC%A0%95%EB%8C%80%20%EA%B3%B5%EC%9C%A0%20%EC%95%A8%EB%B2%94&expires_in=180&contents=write&metadata=read" target="_blank" rel="noopener">🔗 GitHub 토큰 만들기 열기</a>
     <p class="note" style="margin-top:6px">이미 만든 토큰을 고칠 땐 <a href="https://github.com/settings/personal-access-tokens" target="_blank" rel="noopener">내 토큰 목록</a> → 토큰 이름 → 편집 (토큰 값은 그대로예요)</p>
     <label class="j-label" for="shToken">토큰</label><input class="j-input" id="shToken" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_...">
     <label class="j-label" for="shPass">그룹 암호 (친구들이 입력할 말 · 8글자 이상, 숫자만은 안 돼요)</label><input class="j-input" id="shPass" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="우리만 아는 말 8글자 이상">
     <p class="note">토큰은 이 저장소 하나만 읽고 쓸 수 있어요(Fine-grained 토큰만 받아요). 초대 링크에는 암호로 잠근 토큰이 들어가요.</p>
+    <div id="shDiag"></div>
     <div class="j-actions"><button class="btn" data-jclose="1">취소</button><button class="btn primary" data-share-save="1">만들기</button></div>`);
 }
 function openShareJoin(code = '') {
@@ -1312,11 +1328,12 @@ async function onShareClick(q) {
   }
   if (q('[data-share-save]')) {
     const token = $('#shToken').value.trim(), pass = $('#shPass').value;
+    const diag = $('#shDiag'); if (diag) diag.innerHTML = '';
     if (!/^github_pat_\w{60,}$/.test(token)) { toast('Fine-grained 토큰(github_pat_…) 전체를 붙여넣어 주세요', 3500); return true; }
     if (pass.trim().length < 8 || /^\d+$/.test(pass.trim())) { toast('암호는 숫자만 말고 8글자 이상으로 정해 주세요', 3200); return true; }
     const c = new ShareClient(token);
     try { if (!(await c.check())) { toast('토큰 권한이 모자라요 — GitHub 내 토큰 목록 → 토큰 → 편집 → 권한 → 저장소 → 콘텐츠를 “읽기 및 쓰기”로 바꿔 주세요', 6000); return true; } }
-    catch (err) { toast(err.status === 401 ? '토큰이 틀렸거나 만료됐어요 — 토큰 생성 후 전체를 다시 복사해 주세요' : err.status === 404 ? `토큰이 ${REPO.name} 저장소를 못 봐요 — GitHub 내 토큰 목록 → 토큰 → 편집 → 저장소 액세스를 “저장소만 선택합니다 → ${REPO.name}”로 바꾸고 다시 눌러 주세요` : '확인 실패 — 인터넷 연결을 확인해 주세요', 6000); return true; }
+    catch (err) { if (err.status === 404) { await showRepoDiag(c); return true; } toast(err.status === 401 ? '토큰이 틀렸거나 만료됐어요 — 토큰 생성 후 전체를 다시 복사해 주세요' : err.status === 404 ? `토큰이 ${REPO.name} 저장소를 못 봐요 — GitHub 내 토큰 목록 → 토큰 → 편집 → 저장소 액세스를 “저장소만 선택합니다 → ${REPO.name}”로 바꾸고 다시 눌러 주세요` : '확인 실패 — 인터넷 연결을 확인해 주세요', 6000); return true; }
     SH.client = c; store.set('share', { token }); SH.err = null;
     showInvite(await makeInvite(token, pass));
     syncShare({ quiet: false });

@@ -61,6 +61,11 @@ export class ShareClient {
     const r = await res.json();
     return !!(r.permissions?.push || r.permissions?.admin);
   }
+  async visibleRepos() { // → [{ name, owner, priv }] the token can reach — used to explain a 404 on the album repo
+    const res = await this.req('/user/repos?per_page=100&sort=updated');
+    const j = await res.json();
+    return Array.isArray(j) ? j.map(r => ({ name: String(r.name || ''), owner: String(r.owner?.login || ''), priv: !!r.private })) : [];
+  }
   async tree() { // → Map(path → blob sha)
     const res = await this.req(`${this.base()}/git/trees/${REPO.branch}?recursive=1`, { okStatus: [409] });
     if (res.status === 409) return new Map(); // empty repository; a 404 (no access) throws instead of looking like "everything deleted"
