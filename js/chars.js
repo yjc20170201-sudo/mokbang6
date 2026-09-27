@@ -43,6 +43,8 @@ export const CREW_DEFAULT = [
   { id: 'drink', role: '주당',   shirt: '#7b4c9e', pants: '#2a2f38', hair: '#3a2d25', skin: '#e9b98f', acc: 'mug',      emoji: '🍺' },
   { id: 'eat',   role: '먹보',   shirt: '#3a9a55', pants: '#3d3a36', hair: '#15130f', skin: '#f3cba5', acc: 'belly',    emoji: '🍙' },
   { id: 'young', role: '막내',   shirt: '#3b82c4', pants: '#2f3b4a', hair: '#1b1714', skin: '#f5cfa9', acc: 'backpack', emoji: '🎒' },
+  { id: 'photo', role: '찍사',   shirt: '#d9486f', pants: '#2f3440', hair: '#241e1a', skin: '#f1c8a0', acc: 'none',     emoji: '📷' },
+  { id: 'fixer', role: '해결사', shirt: '#5a6b7c', pants: '#2a2f36', hair: '#1c1815', skin: '#eab893', acc: 'cap',      cap: '#e0442f', emoji: '🔧' },
 ];
 
 export class Member {

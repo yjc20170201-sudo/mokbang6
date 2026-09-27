@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { World } from './world.js';
 import { CREW_DEFAULT } from './chars.js';
-import { CAT, KIND, LINES_BY_ACT, PHRASES, CHECKLIST, GROUP_TIPS } from './data/common.js';
+import { CAT, KIND, LINES_BY_ACT, phrasesFor, CHECKLIST, groupTips, splitText } from './data/common.js';
 import * as J from './journal.js';
 import { ShareClient, makeInvite, openInvite, REPO } from './share.js';
 
@@ -27,7 +27,7 @@ const CITY_LOADERS = { osaka: () => import('./data/osaka.js'), tokyo: () => impo
 const S = {
   city: store.get('city', null), day: 0, stop: 0,
   tab: 'here', sheet: 'peek', viewPlace: null, here: null, nearFilter: 'all', openNow: false,
-  crew: store.get('crew', CREW_DEFAULT.map(c => c.role)),
+  crew: loadCrew(),
   krw: store.get('krw', null),
 };
 let C = null;            // current city data
@@ -84,7 +84,19 @@ function isOpen(p, dow, min) {
 function gmapsDir(p, mode = 'transit') { return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(p.q || p.nameJa || p.nameKo)}&travelmode=${mode}`; }
 function gmapsSearch(p) { return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.q || p.nameJa || p.nameKo)}`; }
 function toast(msg, ms = 2400) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), ms); }
-function crewDefs() { return CREW_DEFAULT.map((d, i) => ({ ...d, name: S.crew[i] || d.role })); }
+function loadCrew() { // [{ c: character index, name }], 2–8 people
+  const v2 = store.get('crew2', null);
+  if (Array.isArray(v2) && v2.length >= 2) return v2.filter(m => CREW_DEFAULT[m?.c]).slice(0, 8);
+  const old = store.get('crew', null); // first version: six names in fixed order
+  return CREW_DEFAULT.slice(0, 6).map((d, i) => ({ c: i, name: (Array.isArray(old) && typeof old[i] === 'string' && old[i]) || '' }));
+}
+function crewDefs() { return S.crew.map(m => ({ ...CREW_DEFAULT[m.c], name: m.name || CREW_DEFAULT[m.c].role, idx: m.c })); }
+const N = () => S.crew.length;
+const taxis = () => Math.ceil(N() / 4);
+const nameOfIdx = i => S.crew.find(m => m.c === i)?.name || CREW_DEFAULT[i]?.role || '';
+const guideDef = () => crewDefs().find(d => d.id === 'guide') || crewDefs()[0];
+// research notes were written for six people; say the real headcount when it differs
+const fitN = t => N() === 6 || typeof t !== 'string' ? t : t.replace(/(^|[^\d])6명/g, `$1${N()}명`).replace(/3\+3/g, splitText(N()));
 
 // ---------- legs ----------
 const MODE = {
@@ -102,7 +114,7 @@ function legSummary(leg) {
   if (leg.m === 'walk') parts.push(`도보 ${leg.min || '?'}분`);
   else if (leg.m === 'stay') parts.push('바로 옆!');
   else if (['metro', 'jr', 'private'].includes(leg.m)) { const R = ridesOf(leg); parts.push(R.map(r => lineInfo(r.line)?.name || r.line).join(' → '), `${koSta(R[0].line, R[0].from)}→${koSta(R[R.length - 1].line, R[R.length - 1].to)}`, `${leg.min}분`); }
-  else if (leg.m === 'taxi') parts.push(`택시 2대 ${leg.min}분`);
+  else if (leg.m === 'taxi') parts.push(`택시 ${taxis()}대 ${leg.min}분`);
   else if (leg.m === 'pickup') parts.push(`샵 픽업 ${leg.min || ''}분`);
   else parts.push(`${leg.name || M.name}`, leg.min ? `${leg.min >= 60 ? Math.floor(leg.min / 60) + '시간 ' + (leg.min % 60 ? (leg.min % 60) + '분' : '') : leg.min + '분'}` : '');
   if (leg.fare) parts.push(leg.m === 'taxi' ? `1대 약 ${yen(leg.fare)}` : `1인 ${yen(leg.fare)}`);
@@ -121,11 +133,11 @@ function legSteps(leg, from, to) {
         s: last ? [R.length === 1 && leg.stops ? `${leg.stops}정거장` : '', leg.min ? `${R.length > 1 ? '전체 ' : ''}${leg.min}분` : '', leg.fare ? `${R.length > 1 ? '합계 ' : ''}${yen(leg.fare)}` : 'IC카드로 자동 정산', leg.dir ? `${leg.dir} 방면` : ''].filter(Boolean).join(' · ') : `${esc(koSta(r.line, r.to))}에서 환승` });
     });
     if (leg.walkOut) steps.push({ i: '🚶', t: `${esc(leg.gate ? leg.gate + ' 출구로 나와 ' : '')}도보 ${leg.walkOut}분` });
-    if (leg.note) steps.push({ i: '💡', t: esc(leg.note) });
+    if (leg.note) steps.push({ i: '💡', t: esc(fitN(leg.note)) });
   } else {
     steps.push({ i: MODE[leg.m]?.ico || '➡️', t: `<b>${esc(leg.name || MODE[leg.m]?.name)}</b> ${esc(leg.fromKo || leg.from || '')}${leg.to ? ' → ' + esc(leg.toKo || leg.to) : ''}`, s: [leg.min ? `${leg.min}분` : '', leg.fare ? (leg.m === 'taxi' ? `1대 약 ${yen(leg.fare)}` : `1인 ${yen(leg.fare)}`) : '', leg.dep ? `${leg.dep} 출발` : '', leg.arr ? `${leg.arr} 도착` : ''].filter(Boolean).join(' · ') });
     for (const x of leg.then || []) steps.push({ i: x.i || '➡️', t: esc(x.t), s: x.s });
-    if (leg.note) steps.push({ i: '💡', t: esc(leg.note) });
+    if (leg.note) steps.push({ i: '💡', t: esc(fitN(leg.note)) });
   }
   return steps;
 }
@@ -150,7 +162,7 @@ function segmentsFor(di, si) {
     }
     if (ok) { if (cur.distanceTo(B) > 25) segs.push({ type: 'walk', pts: [cur, B] }); return segs; }
   }
-  if (leg.m === 'taxi' || leg.m === 'pickup') { const mid = A.clone().lerp(B, 0.5).add(new THREE.Vector3(-(B.z - A.z), 0, B.x - A.x).multiplyScalar(0.12)); return [{ type: 'taxi', pts: [A, mid, B], label: leg.m === 'pickup' ? '🚐 샵 픽업' : '🚕🚕 택시 2대' }]; }
+  if (leg.m === 'taxi' || leg.m === 'pickup') { const mid = A.clone().lerp(B, 0.5).add(new THREE.Vector3(-(B.z - A.z), 0, B.x - A.x).multiplyScalar(0.12)); return [{ type: 'taxi', pts: [A, mid, B], label: leg.m === 'pickup' ? '🚐 샵 픽업' : `${'🚕'.repeat(taxis())} 택시 ${taxis()}대` }]; }
   if (leg.m === 'boat') return [{ type: 'boat', pts: [A, B] }];
   if (A.distanceTo(B) < 30) return [];
   return [{ type: 'walk', pts: [A, A.clone().lerp(B, 0.5).add(new THREE.Vector3(1, 0, 1).multiplyScalar(Math.min(40, A.distanceTo(B) * 0.05))), B] }];
@@ -289,7 +301,7 @@ async function go(delta) {
       for (const s of segmentsFor(S.day, S.stop)) {
         if (s.type === 'walk') await world.walk(s.pts, { speed: 380, minDur: 1.2, maxDur: 5 });
         else if (s.type === 'ride') await world.ride(s.pts, { color: s.color, label: s.label, speed: 950, minDur: 1.8, maxDur: 4.5 });
-        else if (s.type === 'taxi') await world.ride(s.pts, { vehicle: 'taxi', label: s.label, speed: 600 });
+        else if (s.type === 'taxi') await world.ride(s.pts, { vehicle: 'taxi', label: s.label, speed: 600, count: s.label.startsWith('🚐') ? 1 : taxis() });
         else if (s.type === 'boat') await world.ride(s.pts, { vehicle: 'boat', label: '🚤', speed: 400 });
         if (myGen !== gen) return;
       }
@@ -382,7 +394,7 @@ function ticket(leg, from, to, { loading = null, auto = true } = {}) {
       <div class="ticket-route"><div class="st"><small>출발</small>${esc(leg.fromKo || from?.nameKo || leg.from || '')}</div><div style="font-size:22px">➜</div><div class="st"><small>도착</small>${esc(leg.toKo || to?.nameKo || leg.to || '')}</div></div>
       <div class="track"><i></i><b>${M.ico}</b></div>
       <div class="ticket-info">${dur ? `<span>⏱ ${dur}</span>` : ''}${leg.fare ? `<span>💴 1인 ${yen(leg.fare)} (${won(leg.fare)})</span>` : ''}${leg.arr ? `<span>🛬 ${esc(leg.arr)} 도착</span>` : ''}</div>
-      ${leg.note ? `<div class="ticket-tip">💡 ${esc(leg.note)}</div>` : ''}
+      ${leg.note ? `<div class="ticket-tip">💡 ${esc(fitN(leg.note))}</div>` : ''}
       <button class="btn primary" id="ticketGo">도착! ▶</button></div>`;
     el.hidden = false;
     const bar = el.querySelector('.track i'), icon = el.querySelector('.track b');
@@ -425,7 +437,7 @@ function dayBudget(di) {
   let food = 0, move = 0;
   C.days[di].stops.forEach((st, si) => {
     const p = stopPlace(di, si); if (p?.price) food += (p.price[0] + p.price[1]) / 2 * (st.share ?? 1);
-    if (st.leg?.fare) move += st.leg.m === 'taxi' ? st.leg.fare / 3 : st.leg.fare;
+    if (st.leg?.fare) move += st.leg.m === 'taxi' ? st.leg.fare * taxis() / N() : st.leg.fare;
     if (st.extra) food += st.extra;
   });
   return { food, move, total: food + move };
@@ -476,14 +488,14 @@ function renderParty() {
   const defs = crewDefs();
   $('#partyDots').innerHTML = defs.map(d => `<i style="background:${d.shirt}" title="${esc(d.name)}"></i>`).join('');
   const st = curStop();
-  $('#partyText').textContent = busy ? `${MODE[st.leg?.m]?.ico || '🚶'} ${short(stopPlace().nameKo)}(으)로 이동 중` : `${st.e || ''} ${st.k} 중 · 6명`;
+  $('#partyText').textContent = busy ? `${MODE[st.leg?.m]?.ico || '🚶'} ${short(stopPlace().nameKo)}(으)로 이동 중` : `${st.e || ''} ${st.k} 중 · ${N()}명`;
 }
 
 function infoGrid(p) {
-  const g6 = { easy: ['easy', '👍 6명 바로 OK'], reserve: ['reserve', '📞 예약하면 OK'], split: ['split', '✂️ 3+3 나눠 앉기'] }[p.g6] || null;
+  const g6 = { easy: ['easy', `👍 ${N()}명 바로 OK`], reserve: ['reserve', '📞 예약하면 OK'], split: ['split', N() <= 4 ? '🪑 카운터석 위주' : `✂️ ${splitText(N())} 나눠 앉기`] }[p.g6] || null;
   const cells = [
     ['영업시간', p.hours || '—'], ['가격 (1인)', p.price ? `${priceText(p.price)} · ${won((p.price[0] + p.price[1]) / 2)}` : '—'],
-    ['6명 자리', g6 ? `<span class="g6 ${g6[0]}">${g6[1]}</span>` : '—'], ['결제', p.cash === true ? '💴 현금만' : p.cash === false ? '💳 카드 OK' : '—'],
+    [`${N()}명 자리`, g6 ? `<span class="g6 ${g6[0]}">${g6[1]}</span>` : '—'], ['결제', p.cash === true ? '💴 현금만' : p.cash === false ? '💳 카드 OK' : '—'],
     ['예약', p.reserve || '—'], ['가까운 역', p.sta || '—'],
   ];
   const shown = cells.filter(([, v]) => v && v !== '—');
@@ -495,7 +507,7 @@ function placeCore(p) {
     ${p.nameJa ? `<p class="note" style="margin:-4px 0 10px"><span class="ja" style="font-size:14px;color:var(--ink-2)">${esc(p.nameJa)}</span>${p.addrJa ? ` · <span class="ja">${esc(p.addrJa)}</span>` : ''}</p>` : ''}
     ${p.menu?.length ? `<div class="sec"><h3>🍽️ 이거 시켜요</h3><ul class="menu">${p.menu.map(m => `<li>${esc(m)}</li>`).join('')}</ul></div>` : ''}
     <div class="sec">${infoGrid(p)}</div>
-    ${p.tips?.length ? `<div class="sec"><h3>💡 알아두면 좋은 것</h3><ul class="tips">${p.tips.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>` : ''}
+    ${p.tips?.length ? `<div class="sec"><h3>💡 알아두면 좋은 것</h3><ul class="tips">${p.tips.map(t => `<li>${esc(fitN(t))}</li>`).join('')}</ul></div>` : ''}
     ${p.booking ? `<div class="sec"><h3>📅 예약 방법</h3><div class="card"><p>${esc(p.booking.how || '')}</p>${p.booking.lang ? `<p class="note">언어: ${esc(p.booking.lang)}${p.booking.lead ? ' · ' + esc(p.booking.lead) : ''}</p>` : ''}${p.booking.url ? `<div class="links" style="margin-top:8px"><a href="${esc(p.booking.url)}" target="_blank" rel="noopener">예약 페이지 열기 ↗</a></div>` : ''}</div></div>` : ''}
     ${p.gear ? `<div class="sec"><h3>🎒 장비</h3><p style="margin:0;font-size:13.5px;color:var(--ink-2)">${esc(p.gear)}</p></div>` : ''}
     <div class="sec links"><a href="${gmapsSearch(p)}" target="_blank" rel="noopener">📍 구글맵에서 보기</a><a href="${gmapsDir(p)}" target="_blank" rel="noopener">🧭 여기로 길찾기</a>${p.nameJa && CAT[p.cat]?.g !== 'see' ? `<a href="https://tabelog.com/rstLst/?sw=${encodeURIComponent(p.nameJa)}" target="_blank" rel="noopener">⭐ 타베로그 리뷰</a>` : ''}</div>`;
@@ -509,7 +521,7 @@ function hereHTML() {
   const dd = tripDate(S.day);
   const warnHTML = closedOn(p, dd) ? `<div class="sec card warn-card"><h4>⚠️ ${fmtDate(dd)}은 휴무일이에요</h4><p>아래 '근처 다른 선택지'에서 다른 집으로 바꾸세요.</p></div>` : '';
   return `${warnHTML}
-    ${st.say ? `<div class="sec guide"><div class="face" aria-hidden="true">${crewDefs()[2].emoji}</div><div class="bubble"><b>${esc(crewDefs()[2].name)}</b> ${esc(st.say)}</div></div>` : ''}
+    ${st.say ? `<div class="sec guide"><div class="face" aria-hidden="true">${guideDef().emoji}</div><div class="bubble"><b>${esc(guideDef().name)}</b> ${esc(fitN(st.say))}</div></div>` : ''}
     ${steps.length ? `<div class="sec"><h3>🧭 여기까지 가는 법</h3><ol class="steps">${steps.map(s => `<li><span class="n">${s.i}</span><span class="t">${s.t}${s.s ? `<small>${esc(s.s)}</small>` : ''}</span></li>`).join('')}</ol></div>` : ''}
     ${journalStrip(p)}
     <div class="sec">${placeCore(p)}</div>
@@ -546,7 +558,7 @@ function planHTML() {
       return `<li class="${si < S.stop ? 'done' : ''}">${si && st.leg ? `<div class="mv">${legSummary(st.leg).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')}</div>` : ''}
         <button data-jump="${si}" aria-current="${si === S.stop}"><span class="tm">${st.t}</span><span class="em">${st.e || catOf(p).e}</span><span><span class="nm">${esc(st.label || p.nameKo)}</span><span class="sb" style="display:block"><span class="kind ${K.cls}" style="height:18px;font-size:11px">${esc(st.k)}</span> ${esc(p.area || '')}${closedOn(p, dd) ? ' <b class="closed-tag">휴무일!</b>' : (p.closed?.length ? ` · ${p.closed.map(x => DOW[x]).join('·')} 휴무` : '')}</span></span></button></li>`;
     }).join('')}</ol>
-    ${d.note ? `<div class="sec card"><p>💡 ${esc(d.note)}</p></div>` : ''}`;
+    ${d.note ? `<div class="sec card"><p>💡 ${esc(fitN(d.note))}</p></div>` : ''}`;
 }
 function nearHTML() {
   const origin = S.here ? { lat: S.here.lat, lng: S.here.lng, nameKo: S.here.gps ? `📡 내 위치 (GPS ±${Math.round(S.here.acc || 0)}m)` : '📍 지도에서 찍은 위치' } : stopPlace();
@@ -568,15 +580,15 @@ function nearHTML() {
 function tipsHTML() {
   const T = C.tips || {};
   const sec = (title, inner) => `<div class="sec"><h3>${title}</h3>${inner}</div>`;
-  const ul = arr => `<div class="card"><ul>${arr.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`;
+  const ul = arr => `<div class="card"><ul>${arr.map(x => `<li>${esc(fitN(x))}</li>`).join('')}</ul></div>`;
   const checks = store.get('checks', {});
   return [
     installHTML(),
     T.flight ? sec('✈️ 항공편', `<div class="card"><h4>${esc(T.flight.title)}</h4><ul>${T.flight.items.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`) : '',
-    sec('💰 총무 계산기', `<div class="card calc"><label for="calcYen">총액 (엔)<input id="calcYen" inputmode="numeric" value="${store.get('calcYen', 18000)}"></label><label for="calcN">인원<input id="calcN" inputmode="numeric" value="6"></label><label for="calcRate">100엔 = 원<input id="calcRate" inputmode="decimal" value="${(krwRate() * 100).toFixed(1)}"></label><span></span><output id="calcOut"></output></div>`),
+    sec('💰 총무 계산기', `<div class="card calc"><label for="calcYen">총액 (엔)<input id="calcYen" inputmode="numeric" value="${store.get('calcYen', 18000)}"></label><label for="calcN">인원<input id="calcN" inputmode="numeric" value="${N()}"></label><label for="calcRate">100엔 = 원<input id="calcRate" inputmode="decimal" value="${(krwRate() * 100).toFixed(1)}"></label><span></span><output id="calcOut"></output></div>`),
     T.transit ? sec('🚃 교통카드 · 패스', ul(T.transit)) : '',
-    sec('👥 6명 여행 꿀팁', ul(GROUP_TIPS)),
-    sec('🗣️ 일본어 한마디 (화면 보여주기)', `<div class="card">${PHRASES.map((p, i) => `<div class="phrase"><span class="ko">${esc(p.ko)}</span><span class="jp">${esc(p.jp)}</span><span class="rd">${esc(p.rd)}</span><button class="small-btn" data-copy="${i}">복사</button></div>`).join('')}</div>`),
+    sec(`👥 ${N()}명 여행 꿀팁`, ul(groupTips(N()))),
+    sec('🗣️ 일본어 한마디 (화면 보여주기)', `<div class="card">${phrasesFor(N()).map((p, i) => `<div class="phrase"><span class="ko">${esc(p.ko)}</span><span class="jp">${esc(p.jp)}</span><span class="rd">${esc(p.rd)}</span><button class="small-btn" data-copy="${i}">복사</button></div>`).join('')}</div>`),
     T.diving ? sec('🤿 프리다이빙 안전·규칙', ul(T.diving)) : '',
     T.tennis ? sec('🎾 테니스 예약', ul(T.tennis)) : '',
     sec('⚠️ 2026년 바뀐 것들', ul(T.changes || [])),
@@ -632,7 +644,7 @@ function bindUI() {
     if ((b = q('[data-install]'))) { const ev = installEvt; installEvt = null; ev?.prompt(); ev?.userChoice?.finally(() => renderBody()); return; }
     if ((b = q('[data-hotelpin]'))) { if (JR.picking) cancelPick(); S.pinHotel = true; setHereMode(true); toast('지도에서 숙소 위치를 탭하세요 🏨'); return; }
     if ((b = q('[data-hotelreset]'))) { store.set('hotel:' + C.id, null); const p = C.places[hotelId()]; if (p?._orig) Object.assign(p, p._orig); toast('예시 위치로 되돌렸어요'); showStop(); return; }
-    if ((b = q('[data-copy]'))) { const p = PHRASES[+b.dataset.copy]; navigator.clipboard?.writeText(p.jp).then(() => toast('복사했어요 📋'), () => toast(p.jp)); return; }
+    if ((b = q('[data-copy]'))) { const p = phrasesFor(N())[+b.dataset.copy]; navigator.clipboard?.writeText(p.jp).then(() => toast('복사했어요 📋'), () => toast(p.jp)); return; }
   });
   $('#sheetBody').addEventListener('input', e => { if (e.target.closest('.calc') && $('#calcYen')) updateCalc(); });
   $('#sheetBody').addEventListener('change', e => {
@@ -890,7 +902,7 @@ function makeDraft(img, loc, { cam = true } = {}) {
   const np = where.lat != null ? nearestPlace(where.lat, where.lng) : null;
   const day = dayOf(t);
   return { img, entry: { id: J.newId(), t, city: C.id, day, stop: day === S.day ? S.stop : 0, lat: where.lat, lng: where.lng, acc: where.acc ?? null, src: where.src,
-    placeId: np?.id || null, placeName: np?.nameKo || (where.src === 'plan' ? stopPlace().nameKo : where.src === 'none' ? '위치 모름 (지도에서 고쳐 주세요)' : '길 위 어딘가'), memo: '', rating: 0, who: JR.who, photo: !!img,
+    placeId: np?.id || null, placeName: np?.nameKo || (where.src === 'plan' ? stopPlace().nameKo : where.src === 'none' ? '위치 모름 (지도에서 고쳐 주세요)' : '길 위 어딘가'), memo: '', rating: 0, who: S.crew.some(m => m.c === JR.who) ? JR.who : S.crew[0].c, photo: !!img,
     owner: SH.device, sync: 'new' } };
 }
 function cancelPick() {
@@ -907,7 +919,7 @@ function openRecorder() {
   const el = $('#jModal');
   el.innerHTML = `<div class="modal jrec" role="dialog" aria-label="기록 남기기">
     <h2 class="j-title">📸 여기서 한 장!</h2>
-    <p class="note">사진·메모에 위치, 시간, 가게 이름이 같이 저장돼요. ${SH.client ? '👥 공유 앨범에 올라가서 6명이 같이 봐요.' : '이 폰에만 보관돼요.'}</p>
+    <p class="note">사진·메모에 위치, 시간, 가게 이름이 같이 저장돼요. ${SH.client ? `👥 공유 앨범에 올라가서 ${N()}명이 같이 봐요.` : '이 폰에만 보관돼요.'}</p>
     <div class="rec-btns">
       <button class="btn primary" data-rec="cam">📷 사진 찍기</button>
       <p class="note" style="margin:0">앱에서 찍은 사진은 폰 사진앱에 자동 저장이 안 돼요. 나중에 📤 공유 → '이미지 저장'으로 옮겨 두세요.</p>
@@ -957,7 +969,7 @@ function renderEditor() {
     <label class="j-label" for="jMemo">메모</label>
     <textarea id="jMemo" rows="3" maxlength="300" placeholder="예: 우설 미쳤음, 다음에 또 오자">${esc(e.memo)}</textarea>
     <div class="j-label">별점</div><div class="stars" role="group" aria-label="별점">${[1, 2, 3, 4, 5].map(n => `<button class="star" data-star="${n}" aria-pressed="${e.rating >= n}" aria-label="별 ${n}개">★</button>`).join('')}</div>
-    <div class="j-label">누가 남겼어?</div><div class="who">${crewDefs().map((d, i) => `<button class="chip" data-who="${i}" aria-pressed="${e.who === i}">${d.emoji} ${esc(d.name)}</button>`).join('')}</div>
+    <div class="j-label">누가 남겼어?</div><div class="who">${crewDefs().map(d => `<button class="chip" data-who="${d.idx}" aria-pressed="${e.who === d.idx}">${d.emoji} ${esc(d.name)}</button>`).join('')}</div>
     <div class="j-actions"><button class="btn" data-jcancel="1">취소</button><button class="btn primary" data-jsave="1">💾 저장</button></div></div>`;
   el.hidden = false; el.dataset.mode = 'edit';
 }
@@ -1039,8 +1051,8 @@ function shareText(list) {
 async function shareFiles(files, text) {
   try {
     if (files.length && !navigator.canShare?.({ files })) { toast('이 화면에선 사진 공유가 안 돼요. 설치한 앱이나 사파리·크롬에서 해 보세요', 3500); return; }
-    if (files.length) await navigator.share({ files, text, title: '6인 먹방원정대' });
-    else if (navigator.share) await navigator.share({ text, title: '6인 먹방원정대' });
+    if (files.length) await navigator.share({ files, text, title: '먹방원정대' });
+    else if (navigator.share) await navigator.share({ text, title: '먹방원정대' });
     else { await navigator.clipboard.writeText(text); toast('기록을 복사했어요 📋 (이 화면에선 사진 공유가 안 돼요)', 3500); }
   } catch (err) { if (err?.name !== 'AbortError') toast('공유가 안 되는 화면이에요. 설치한 앱이나 사파리·크롬에서 해 보세요', 3500); }
 }
@@ -1060,7 +1072,7 @@ async function shareDay(day, btn) { // two taps: prepare (reads the photos), the
     if (b) files.push(new File([b], `mokbang6-d${day + 1}-${files.length + 1}.jpg`, { type: 'image/jpeg' }));
   }
   const batches = []; for (let i = 0; i < files.length; i += 10) batches.push(files.slice(i, i + 10));
-  JR.prepared = { day, batches, i: 0, text: `🍜 6인 먹방원정대 ${day + 1}일차\n\n` + shareText(list) };
+  JR.prepared = { day, batches, i: 0, text: `🍜 먹방원정대 ${day + 1}일차\n\n` + shareText(list) };
   btn.textContent = shareLabel(JR.prepared);
 }
 async function onJournalClick(e) {
@@ -1103,7 +1115,7 @@ async function onJournalClick(e) {
   }
   if ((b = q('[data-jdel]'))) {
     const id = b.dataset.jdel, was = JR.entries.find(v => v.id === id);
-    if (!b.dataset.sure) { b.dataset.sure = '1'; b.textContent = was?.remote ? '6명 모두에게서 지워져요 — 한 번 더' : '정말 삭제? 한 번 더 누르세요'; return; }
+    if (!b.dataset.sure) { b.dataset.sure = '1'; b.textContent = was?.remote ? '원정대 모두에게서 지워져요 — 한 번 더' : '정말 삭제? 한 번 더 누르세요'; return; }
     try { await J.deleteEntry(id); } catch { toast('삭제 실패'); return; }
     if (SH.client || was?.rsha || was?.remote) { SH.tomb = [...new Set([...SH.tomb, id])]; store.set('tomb', SH.tomb); scheduleSync(); }
     JR.entries = JR.entries.filter(v => v.id !== id);
@@ -1118,7 +1130,7 @@ function journalStrip(p) {
     ${list.length ? `<div class="album-grid">${list.slice(-6).map(albumItem).join('')}</div>` : ''}</div>`;
 }
 const stars = e => Math.max(0, Math.min(5, Math.round(+e.rating) || 0));
-function whoOf(e) { const d = CREW_DEFAULT[e.who] || null; if (!d) return null; return { emoji: d.emoji, name: e.remote ? (e.whoName || d.role) : (crewDefs()[e.who]?.name || d.role) }; }
+function whoOf(e) { const d = CREW_DEFAULT[e.who] || null; if (!d) return null; return { emoji: d.emoji, name: e.remote ? (e.whoName || d.role) : nameOfIdx(e.who) }; }
 function albumDay(e) {
   const fb = Number.isInteger(e.day) && e.day >= 0 && e.day < C.days.length ? e.day : 0;
   const d0 = tripDate(0); if (!d0) return fb;
@@ -1153,7 +1165,7 @@ const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 1 
 function scheduleSync(ms = 1500) { if (!SH.client) return; clearTimeout(SH.timer); SH.timer = setTimeout(() => syncShare(), ms); }
 function metaOf(e) {
   const { id, t, city, day, stop, lat, lng, acc, src, placeId, placeName, memo, rating, who, photo, owner } = e;
-  return { v: 1, id, t, city, day, stop, lat, lng, acc, src, placeId, placeName, memo, rating, who, whoName: crewDefs()[who]?.name || '', photo, owner: owner || SH.device };
+  return { v: 1, id, t, city, day, stop, lat, lng, acc, src, placeId, placeName, memo, rating, who, whoName: nameOfIdx(who), photo, owner: owner || SH.device };
 }
 const str = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
 const num = v => typeof v === 'number' && isFinite(v) ? v : null;
@@ -1163,7 +1175,7 @@ function normMeta(m) { // records come from other phones: keep only known fields
   const la = num(m.lat), lo = num(m.lng), ok = la != null && lo != null && Math.abs(la) <= 90 && Math.abs(lo) <= 180;
   return { t: num(m.t) ?? 0, city: str(m.city, 40), day: int(m.day, 0, 60), stop: int(m.stop, 0, 99), lat: ok ? la : null, lng: ok ? lo : null, acc: num(m.acc),
     src: str(m.src, 10), placeId: typeof m.placeId === 'string' ? m.placeId.slice(0, 80) : null, placeName: str(m.placeName, 80) || '어딘가', memo: str(m.memo, 300),
-    rating: int(m.rating, 0, 5), who: int(m.who, 0, 5), whoName: str(m.whoName, 20), photo: m.photo === true, owner: str(m.owner, 40) };
+    rating: int(m.rating, 0, 5), who: int(m.who, 0, CREW_DEFAULT.length - 1), whoName: str(m.whoName, 20), photo: m.photo === true, owner: str(m.owner, 40) };
 }
 async function syncShare({ quiet = true } = {}) {
   if (!SH.client || !JR.ok || !navigator.onLine) return;
@@ -1237,8 +1249,8 @@ async function syncShare({ quiet = true } = {}) {
 }
 function shareRefresh(changed = false) { if (C && (S.tab === 'album' || (changed && S.tab === 'here'))) renderBody(true); }
 function shareCardHTML() {
-  if (!shareAllowed()) return isPWA() ? '' : `<div class="card share-card"><h4>👥 6명 공유 앨범</h4><p>공유 앨범은 설치형 앱(깃허브 주소)에서만 돼요: <b>yjc20170201-sudo.github.io/mokbang6</b></p></div>`;
-  if (!SH.client) return `<div class="card share-card"><h4>👥 6명 공유 앨범</h4><p>모두가 찍은 사진이 한 앨범과 지도에 모여요. 방장이 한 번 만들고, 나머지는 카톡으로 받은 초대 링크 + 암호로 들어오면 돼요.</p>
+  if (!shareAllowed()) return isPWA() ? '' : `<div class="card share-card"><h4>👥 원정대 공유 앨범</h4><p>공유 앨범은 설치형 앱(깃허브 주소)에서만 돼요: <b>yjc20170201-sudo.github.io/mokbang6</b></p></div>`;
+  if (!SH.client) return `<div class="card share-card"><h4>👥 원정대 공유 앨범</h4><p>모두가 찍은 사진이 한 앨범과 지도에 모여요. 방장이 한 번 만들고, 나머지는 카톡으로 받은 초대 링크 + 암호로 들어오면 돼요.</p>
     <div class="links" style="margin-top:8px"><button class="small-btn" data-share-join="1">🔑 초대받았어요</button><button class="small-btn" data-share-create="1">👑 방장: 공유 앨범 만들기</button></div></div>`;
   const pending = JR.entries.filter(e => !e.remote && e.sync !== 'done').length, friends = JR.entries.filter(e => e.remote).length;
   const authBad = SH.err && !SH.err.rateLimited && [401, 403, 404].includes(SH.err.status);
@@ -1331,8 +1343,8 @@ async function onShareClick(q) {
     showInvite(await makeInvite(token, pass)); return true;
   }
   if ((b = q('[data-share-send]'))) {
-    const url = b.dataset.shareSend, text = '🍜 6인 먹방원정대 공유 앨범 초대! 링크 열고 암호 넣으면 돼요 (암호는 따로 알려줄게)';
-    try { if (navigator.share) await navigator.share({ title: '6인 먹방원정대', text, url }); else { await navigator.clipboard.writeText(text + '\n' + url); toast('복사했어요 📋'); } } catch (err) { if (err?.name !== 'AbortError') toast('공유가 안 되면 복사 버튼을 쓰세요'); }
+    const url = b.dataset.shareSend, text = '🍜 먹방원정대 공유 앨범 초대! 링크 열고 암호 넣으면 돼요 (암호는 따로 알려줄게)';
+    try { if (navigator.share) await navigator.share({ title: '먹방원정대', text, url }); else { await navigator.clipboard.writeText(text + '\n' + url); toast('복사했어요 📋'); } } catch (err) { if (err?.name !== 'AbortError') toast('공유가 안 되면 복사 버튼을 쓰세요'); }
     return true;
   }
   if ((b = q('[data-share-copy]'))) { navigator.clipboard?.writeText(b.dataset.shareCopy).then(() => toast('복사했어요 📋'), () => toast('길게 눌러서 복사해 주세요')); return true; }
@@ -1395,23 +1407,40 @@ function hotelHTML(p) {
 function openIntro(first = false) {
   const el = $('#intro'); const defs = crewDefs();
   el.innerHTML = `<div class="modal" role="dialog" aria-labelledby="introTitle">
-    <span class="eyebrow">제주 → 일본 · 4박 5일 · 40대 6인</span>
-    <h1 class="intro-title" id="introTitle">6인 <em>먹방</em>원정대</h1>
+    <span class="eyebrow">제주 → 일본 · 4박 5일 · 40대 <span id="crewCount">${N()}</span>인</span>
+    <h1 class="intro-title" id="introTitle"><span id="crewCount2">${N()}</span>인 <em>먹방</em>원정대</h1>
     <p class="lede">아침 밥부터 마지막 해장 라멘까지, 원정대가 3D 지도 위를 걸으며 맛집·이동법·술집을 안내해요. 프리다이빙 하루, 테니스 하루 포함.</p>
     <div class="city-pick">
       ${['osaka', 'tokyo'].map(id => { const m = CITY_META[id]; return `<button class="city-card" data-city="${id}" aria-pressed="${S.city === id}"><span class="nm">${m.emoji} ${m.name}</span><ul>${m.points.map(x => `<li>${esc(x)}</li>`).join('')}</ul></button>`; }).join('')}
     </div>
-    <h3 style="font-family:var(--f-display);font-weight:400;font-size:17px;margin:18px 0 0">원정대 이름표</h3>
-    <div class="crew">${defs.map((d, i) => `<label for="crew${i}"><span class="av" style="background:${d.shirt}">${d.emoji}</span><input id="crew${i}" data-crew="${i}" value="${esc(d.name)}" maxlength="8" aria-label="${d.role} 이름"></label>`).join('')}</div>
+    <div id="crewEd"></div>
     <button class="btn primary intro-go" id="introGo">${first ? '✈️ 출발!' : '이대로 보기'}</button>
-    <p class="fine">대장·총무·길잡이·주당·먹보·막내 — 이름을 바꿔 보세요. 저장은 이 폰에만 돼요. 첫날 비행기 착륙부터 보여줘요.</p>
+    <p class="fine">이름을 바꾸거나 ✕로 빼고, ＋로 더할 수 있어요 (2~8명). 저장은 이 폰에만 돼요. 첫날 비행기 착륙부터 보여줘요.</p>
   </div>`;
   el.hidden = false;
+  const draft = S.crew.map(x => ({ ...x }));
+  const readCrew = () => el.querySelectorAll('[data-crew]').forEach(i => { draft[+i.dataset.crew].name = i.value; });
+  const drawCrew = () => {
+    el.querySelector('#crewEd').innerHTML = `<div class="crew-head"><h3>원정대 ${draft.length}명</h3><span class="note">이름 바꾸기 · ✕ 빼기 · ＋ 더하기</span></div>
+      <div class="crew">${draft.map((x, i) => { const d = CREW_DEFAULT[x.c]; return `<div class="crew-m"><span class="av" style="background:${d.shirt}">${d.emoji}</span><input id="crew${x.c}" data-crew="${i}" value="${esc(x.name || d.role)}" maxlength="8" aria-label="${d.role} 이름">${draft.length > 2 ? `<button type="button" class="crew-x" data-crew-del="${i}" aria-label="${esc(x.name || d.role)} 빼기">✕</button>` : ''}</div>`; }).join('')}
+      ${draft.length < 8 ? '<button type="button" class="crew-add" data-crew-add="1">＋<br>한 명 추가</button>' : ''}</div>`;
+    el.querySelector('#crewCount').textContent = draft.length; el.querySelector('#crewCount2').textContent = draft.length;
+  };
+  drawCrew();
+  el.querySelector('#crewEd').onclick = e => {
+    const del = e.target.closest('[data-crew-del]'), add = e.target.closest('[data-crew-add]');
+    if (!del && !add) return;
+    readCrew();
+    if (del && draft.length > 2) draft.splice(+del.dataset.crewDel, 1);
+    if (add && draft.length < 8) { const free = CREW_DEFAULT.findIndex((_, c) => !draft.some(x => x.c === c)); if (free >= 0) draft.push({ c: free, name: '' }); }
+    drawCrew();
+  };
   el.querySelectorAll('[data-city]').forEach(b => b.onclick = () => { el.querySelectorAll('[data-city]').forEach(x => x.setAttribute('aria-pressed', 'false')); b.setAttribute('aria-pressed', 'true'); el.dataset.pick = b.dataset.city; });
   el.dataset.pick = S.city || 'osaka';
   el.querySelector(`[data-city="${el.dataset.pick}"]`).setAttribute('aria-pressed', 'true');
   el.querySelector('#introGo').onclick = async () => {
-    S.crew = [...el.querySelectorAll('[data-crew]')].map(i => i.value.trim() || CREW_DEFAULT[+i.dataset.crew].role); store.set('crew', S.crew);
+    readCrew(); S.crew = draft.map(x => ({ c: x.c, name: x.name.trim() })); store.set('crew2', S.crew);
+    if (!S.crew.some(x => x.c === JR.who)) { JR.who = S.crew[0].c; store.set('who', JR.who); }
     el.hidden = true;
     const pick = el.dataset.pick;
     world.setCrew(crewDefs());

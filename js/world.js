@@ -317,12 +317,13 @@ export class World {
     });
     members.forEach(m => m.setMode('idle'));
   }
-  async ride(pts, { vehicle = 'train', color = '#e5171f', speed = 700, minDur = 2.2, maxDur = 6, hideAt = 'both', label = '' } = {}) {
+  async ride(pts, opts = {}) {
+    const { vehicle = 'train', color = '#e5171f', speed = 700, minDur = 2.2, maxDur = 6, label = '' } = opts;
     if (!pts || pts.length < 2) return;
     pts = pts.map(p => p.clone().setY(0));
     const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.2);
     const len = curve.getLength(), dur = Math.min(maxDur, Math.max(minDur, len / speed));
-    const vs = vehicle === 'taxi' ? [makeTaxi(), makeTaxi('#2d4a2b', '#ffd54f')] : vehicle === 'boat' ? [makeBoat()] : vehicle === 'plane' ? [makePlane()] : [makeTrain(color, 3)];
+    const vs = vehicle === 'taxi' ? Array.from({ length: Math.max(1, opts.count || 2) }, (_, i) => i % 2 ? makeTaxi('#2d4a2b', '#ffd54f') : makeTaxi()) : vehicle === 'boat' ? [makeBoat()] : vehicle === 'plane' ? [makePlane()] : [makeTrain(color, 3)];
     vs.forEach(v => { v.traverse(o => { if (o.isMesh) o.castShadow = true; }); this.fx.add(v); });
     // members hop in
     const c0 = curve.getPointAt(0);
@@ -463,7 +464,7 @@ export class World {
         this.members.forEach((m, i) => { const a = i / 6 * Math.PI * 2; m.root.position.copy(spot).add(V(Math.sin(a) * 40, -6, Math.cos(a) * 40)); m.root.rotation.y = a + Math.PI; m.setMode('float'); });
         let k = 0;
         const diveOne = async () => {
-          const m = this.members[k++ % 6]; const home = m.root.position.clone(); const depth = -(R.depth - 6);
+          const m = this.members[k++ % this.members.length]; const home = m.root.position.clone(); const depth = -(R.depth - 6);
           m.setMode('swim'); m.body.rotation.x = Math.PI; this.say('덕다이브~ 🤿', m, 1500);
           const bubbles = setInterval(() => this.pop('🫧', m.root.position.clone().setY(-10), 1), 380);
           await this.animate(2.2, t => { m.root.position.y = lerp(-6, depth, ease(t)); m.root.rotation.y += 0.004; });
