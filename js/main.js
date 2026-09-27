@@ -4,6 +4,7 @@ import { World } from './world.js';
 import { CREW_DEFAULT } from './chars.js';
 import { CAT, KIND, LINES_BY_ACT, PHRASES, CHECKLIST, GROUP_TIPS } from './data/common.js';
 import * as J from './journal.js';
+import { ShareClient, makeInvite, openInvite, REPO } from './share.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -612,6 +613,7 @@ function bindUI() {
     let b;
     if ((b = q('[data-jump]'))) return jumpTo(S.day, +b.dataset.jump);
     if ((b = q('[data-rec-open]'))) return openRecorder();
+    if (q('[data-share-create],[data-share-join],[data-share-invite],[data-share-sync],[data-share-leave]')) { onShareClick(q); return; }
     if ((b = q('[data-entry]'))) return openEntry(b.dataset.entry);
     if ((b = q('[data-share-day]'))) return shareDay(+b.dataset.shareDay, b);
     if ((b = q('[data-track-toggle]'))) { JR.showTrack = !JR.showTrack; store.set('showTrack', JR.showTrack); refreshTrack(); renderBody(true); return; }
@@ -888,7 +890,8 @@ function makeDraft(img, loc, { cam = true } = {}) {
   const np = where.lat != null ? nearestPlace(where.lat, where.lng) : null;
   const day = dayOf(t);
   return { img, entry: { id: J.newId(), t, city: C.id, day, stop: day === S.day ? S.stop : 0, lat: where.lat, lng: where.lng, acc: where.acc ?? null, src: where.src,
-    placeId: np?.id || null, placeName: np?.nameKo || (where.src === 'plan' ? stopPlace().nameKo : where.src === 'none' ? '위치 모름 (지도에서 고쳐 주세요)' : '길 위 어딘가'), memo: '', rating: 0, who: JR.who, photo: !!img } };
+    placeId: np?.id || null, placeName: np?.nameKo || (where.src === 'plan' ? stopPlace().nameKo : where.src === 'none' ? '위치 모름 (지도에서 고쳐 주세요)' : '길 위 어딘가'), memo: '', rating: 0, who: JR.who, photo: !!img,
+    owner: SH.device, sync: 'new' } };
 }
 function cancelPick() {
   const t = JR.picking; JR.picking = null; document.body.classList.remove('tap-mode'); $('#pickBar').hidden = true;
@@ -900,10 +903,11 @@ function openRecorder() {
   if (!JR.ok) { toast('이 화면에선 기록을 저장할 수 없어요'); return; }
   if (JR.draft) { cancelPick(); renderEditor(); toast('저장 안 한 사진이 있어요 — 먼저 저장하거나 취소해 주세요', 3000); return; }
   if (JR.busy) return;
+  JR.modalGen = (JR.modalGen || 0) + 1;
   const el = $('#jModal');
   el.innerHTML = `<div class="modal jrec" role="dialog" aria-label="기록 남기기">
     <h2 class="j-title">📸 여기서 한 장!</h2>
-    <p class="note">사진·메모에 위치, 시간, 가게 이름이 같이 저장돼요. 이 폰에만 보관돼요.</p>
+    <p class="note">사진·메모에 위치, 시간, 가게 이름이 같이 저장돼요. ${SH.client ? '👥 공유 앨범에 올라가서 6명이 같이 봐요.' : '이 폰에만 보관돼요.'}</p>
     <div class="rec-btns">
       <button class="btn primary" data-rec="cam">📷 사진 찍기</button>
       <p class="note" style="margin:0">앱에서 찍은 사진은 폰 사진앱에 자동 저장이 안 돼요. 나중에 📤 공유 → '이미지 저장'으로 옮겨 두세요.</p>
@@ -942,6 +946,7 @@ async function startDraft(file, cam = true) {
   renderEditor();
 }
 function renderEditor() {
+  JR.modalGen = (JR.modalGen || 0) + 1;
   const { img, entry: e } = JR.draft, el = $('#jModal');
   if (JR.draftURL) URL.revokeObjectURL(JR.draftURL);
   JR.draftURL = img ? URL.createObjectURL(img.full) : null;
@@ -961,15 +966,19 @@ async function saveDraft(d) {
   await J.saveEntry(e, d.img ? { full: d.img.full, thumb: d.img.thumb, orig: d.orig || null } : {});
   if (!JR.entries.some(x => x.id === e.id)) JR.entries.push(e);
   JR.entries.sort((a, b) => a.t - b.t);
+  scheduleSync();
   if (!JR.persistAsked) { JR.persistAsked = true; navigator.storage?.persist?.().catch(() => {}); }
   return e;
 }
 async function updateEntry(id, patch) {
-  const e = JR.entries.find(x => x.id === id); if (!e) return;
+  const e = JR.entries.find(x => x.id === id); if (!e || e.remote) return;
   Object.assign(e, patch);
+  if (e.sync === 'done') e.sync = 'dirty';
   try { await J.saveEntry(e); } catch { toast('저장 실패 — 저장공간을 확인해 주세요'); }
+  scheduleSync();
 }
 function closeJModal() {
+  JR.modalGen = (JR.modalGen || 0) + 1;
   if (JR.picking) { JR.picking = null; document.body.classList.remove('tap-mode'); $('#pickBar').hidden = true; }
   const el = $('#jModal'); el.hidden = true; el.innerHTML = ''; el.dataset.mode = '';
   if (JR.draftURL) { URL.revokeObjectURL(JR.draftURL); JR.draftURL = null; }
@@ -994,35 +1003,38 @@ async function openEntry(id) {
   if (JR.picking === 'draft' && JR.draft) { cancelPick(); return; } // never drop an unsaved photo
   if (JR.picking) cancelPick();
   const e = JR.entries.find(x => x.id === id); if (!e) return;
+  const my = JR.modalGen = (JR.modalGen || 0) + 1; // a later dialog wins over this one while the photo loads
   let url = null, file = null;
   if (e.photo) {
-    const b = await J.getBlob(e.id, 'full').catch(() => null);
+    let b = await J.getBlob(e.id, 'full').catch(() => null);
+    if (!b && SH.client) { toast('📥 사진 받는 중…', 1500); try { b = await SH.client.get(`p/${e.id}.jpg`); await J.saveEntry(e, { full: b }); } catch { toast('사진을 못 받았어요 — 연결을 확인해 주세요', 3000); } }
     const o = await J.getBlob(e.id, 'orig').catch(() => null);
     if (b) url = URL.createObjectURL(b);
     if (o || b) file = new File([o || b], `mokbang6-${isoDate(new Date(e.t))}-${e.id.slice(-5)}.jpg`, { type: 'image/jpeg' });
   }
+  if (my !== JR.modalGen) { if (url) URL.revokeObjectURL(url); return; }
   closeJModal();
   JR.viewURL = url; JR.viewFile = file;
-  const who = crewDefs()[e.who];
+  const who = whoOf(e), mine = !e.remote;
   const el = $('#jModal');
   el.innerHTML = `<div class="modal jview" role="dialog" aria-label="기록 보기" data-entry-id="${e.id}">
     ${url ? `<img class="j-photo" src="${url}" alt="${esc(e.placeName)}에서 찍은 사진">` : ''}
-    <div class="j-where"><b>📍 ${esc(e.placeName)}</b><span>${fmtTime(e.t)}${who ? ' · ' + who.emoji + ' ' + esc(who.name) : ''}</span></div>
-    ${e.rating ? `<div class="j-stars" aria-label="별점 ${e.rating}점">${'★'.repeat(e.rating)}${'☆'.repeat(5 - e.rating)}</div>` : ''}
+    <div class="j-where"><b>📍 ${esc(e.placeName)}</b><span>${fmtTime(e.t)}${who ? ' · ' + who.emoji + ' ' + esc(who.name) : ''}${e.remote ? ' · 👥 공유 앨범' : ''}</span></div>
+    ${stars(e) ? `<div class="j-stars" aria-label="별점 ${stars(e)}점">${'★'.repeat(stars(e))}${'☆'.repeat(5 - stars(e))}</div>` : ''}
     <label class="j-label" for="jMemoEdit">메모</label>
-    <textarea id="jMemoEdit" rows="3" maxlength="300" placeholder="메모 추가">${esc(e.memo)}</textarea>
+    ${mine ? `<textarea id="jMemoEdit" rows="3" maxlength="300" placeholder="메모 추가">${esc(e.memo)}</textarea>` : (e.memo ? `<p class="j-memo">${esc(e.memo)}</p>` : '')}
     <div class="links" style="margin-top:10px">
       <button class="small-btn" data-jshare="${e.id}">📤 공유 · 사진앱 저장</button>
       <button class="small-btn" data-jmap="${e.id}">🗺️ 지도에서 보기</button>
       ${e.lat != null ? `<a href="https://www.google.com/maps/search/?api=1&query=${e.lat.toFixed(6)},${e.lng.toFixed(6)}" target="_blank" rel="noopener">🧭 구글맵</a>` : ''}
-      <button class="small-btn" data-jfix="${e.id}">👆 위치 고치기</button>
-      <button class="small-btn danger" data-jdel="${e.id}">🗑️ 삭제</button>
+      ${mine ? `<button class="small-btn" data-jfix="${e.id}">👆 위치 고치기</button>` : ''}
+      <button class="small-btn danger" data-jdel="${e.id}">🗑️ ${mine ? '삭제' : '공유 앨범에서 삭제'}</button>
     </div>
     <div class="j-actions"><button class="btn primary" data-jclose="1">닫기</button></div></div>`;
   el.hidden = false; el.dataset.mode = 'view';
 }
 function shareText(list) {
-  return list.map(e => `📍 ${e.placeName} · ${fmtTime(e.t)}${e.rating ? ' ' + '★'.repeat(e.rating) : ''}${e.memo ? '\n' + e.memo : ''}${e.lat != null ? `\nhttps://maps.google.com/?q=${e.lat.toFixed(6)},${e.lng.toFixed(6)}` : ''}`).join('\n\n');
+  return list.map(e => `📍 ${e.placeName} · ${fmtTime(e.t)}${stars(e) ? ' ' + '★'.repeat(stars(e)) : ''}${e.memo ? '\n' + e.memo : ''}${e.lat != null ? `\nhttps://maps.google.com/?q=${e.lat.toFixed(6)},${e.lng.toFixed(6)}` : ''}`).join('\n\n');
 }
 async function shareFiles(files, text) {
   try {
@@ -1034,7 +1046,7 @@ async function shareFiles(files, text) {
 }
 const shareLabel = p => p.batches.length > 1 ? `📤 지금 공유 ${p.i + 1}/${p.batches.length} 묶음` : `📤 지금 공유하기 (${p.batches[0]?.length || 0}장)`;
 async function shareDay(day, btn) { // two taps: prepare (reads the photos), then share within the tap; 10 photos per share (Android limit)
-  const list = JR.entries.filter(e => e.city === C.id && e.day === day);
+  const list = JR.entries.filter(e => e.city === C.id && albumDay(e) === day);
   if (JR.prepared?.day === day) {
     const p = JR.prepared, part = p.batches[p.i++];
     if (p.i >= p.batches.length) { JR.prepared = null; btn.textContent = '📤 이 날 사진 공유'; } else btn.textContent = shareLabel(p);
@@ -1043,7 +1055,8 @@ async function shareDay(day, btn) { // two taps: prepare (reads the photos), the
   btn.textContent = '준비 중…';
   const files = [];
   for (const e of list) if (e.photo) {
-    const b = await J.getBlob(e.id, 'orig').catch(() => null) || await J.getBlob(e.id, 'full').catch(() => null);
+    let b = await J.getBlob(e.id, 'orig').catch(() => null) || await J.getBlob(e.id, 'full').catch(() => null);
+    if (!b && e.remote && SH.client) { b = await SH.client.get(`p/${e.id}.jpg`).catch(() => null); if (b) await J.saveEntry(e, { full: b }).catch(() => {}); }
     if (b) files.push(new File([b], `mokbang6-d${day + 1}-${files.length + 1}.jpg`, { type: 'image/jpeg' }));
   }
   const batches = []; for (let i = 0; i < files.length; i += 10) batches.push(files.slice(i, i + 10));
@@ -1053,6 +1066,7 @@ async function shareDay(day, btn) { // two taps: prepare (reads the photos), the
 async function onJournalClick(e) {
   const el = $('#jModal'), q = s => e.target.closest(s);
   let b;
+  if (await onShareClick(q)) return;
   if (e.target === el && el.dataset.mode !== 'edit') return closeJModal();
   if (q('[data-jclose]')) return closeJModal();
   if ((b = q('[data-jcancel]'))) {
@@ -1088,9 +1102,10 @@ async function onJournalClick(e) {
     return;
   }
   if ((b = q('[data-jdel]'))) {
-    if (!b.dataset.sure) { b.dataset.sure = '1'; b.textContent = '정말 삭제? 한 번 더 누르세요'; return; }
-    const id = b.dataset.jdel;
+    const id = b.dataset.jdel, was = JR.entries.find(v => v.id === id);
+    if (!b.dataset.sure) { b.dataset.sure = '1'; b.textContent = was?.remote ? '6명 모두에게서 지워져요 — 한 번 더' : '정말 삭제? 한 번 더 누르세요'; return; }
     try { await J.deleteEntry(id); } catch { toast('삭제 실패'); return; }
+    if (SH.client || was?.rsha || was?.remote) { SH.tomb = [...new Set([...SH.tomb, id])]; store.set('tomb', SH.tomb); scheduleSync(); }
     JR.entries = JR.entries.filter(v => v.id !== id);
     const u = JR.urls.get(id); if (u) { URL.revokeObjectURL(u); JR.urls.delete(id); }
     closeJModal(); toast('🗑️ 삭제했어요'); refreshJournal(); if (S.tab === 'album' || S.tab === 'here') renderBody(true);
@@ -1102,22 +1117,226 @@ function journalStrip(p) {
   return `<div class="sec"><div class="album-h"><h3>📸 여기 기록${list.length ? ' ' + list.length : ''}</h3><button class="small-btn" data-rec-open="1">📸 남기기</button></div>
     ${list.length ? `<div class="album-grid">${list.slice(-6).map(albumItem).join('')}</div>` : ''}</div>`;
 }
+const stars = e => Math.max(0, Math.min(5, Math.round(+e.rating) || 0));
+function whoOf(e) { const d = CREW_DEFAULT[e.who] || null; if (!d) return null; return { emoji: d.emoji, name: e.remote ? (e.whoName || d.role) : (crewDefs()[e.who]?.name || d.role) }; }
+function albumDay(e) {
+  const fb = Number.isInteger(e.day) && e.day >= 0 && e.day < C.days.length ? e.day : 0;
+  const d0 = tripDate(0); if (!d0) return fb;
+  d0.setHours(0, 0, 0, 0); const d = new Date(e.t); d.setHours(0, 0, 0, 0);
+  const i = Math.round((d - d0) / 864e5);
+  return i >= 0 && i < C.days.length ? i : fb;
+}
 function albumItem(e) {
-  return `<button class="album-item" data-entry="${e.id}">${e.photo ? '<img data-thumb="' + e.id + '" alt="">' : `<span class="memo-card">📝 ${esc((e.memo || '메모').slice(0, 40))}</span>`}<span class="cap">${fmtTime(e.t).split(' ').pop()} · ${esc(short(e.placeName, 10))}${e.rating ? ' ' + '★'.repeat(e.rating) : ''}</span></button>`;
+  return `<button class="album-item${e.remote ? ' remote' : ''}" data-entry="${e.id}">${e.remote ? `<span class="who-badge">${whoOf(e)?.emoji || '👤'}</span>` : ''}${e.photo ? '<img data-thumb="' + e.id + '" alt="">' : `<span class="memo-card">📝 ${esc((e.memo || '메모').slice(0, 40))}</span>`}<span class="cap">${fmtTime(e.t).split(' ').pop()} · ${esc(short(e.placeName, 10))}${stars(e) ? ' ' + '★'.repeat(stars(e)) : ''}</span></button>`;
 }
 function albumHTML() {
   if (!JR.ok) return '<p class="note">이 브라우저에선 사진·메모 저장을 쓸 수 없어요.</p>';
   const mine = JR.entries.filter(e => e.city === C.id), photos = mine.filter(e => e.photo).length;
-  const head = `<div class="day-hero"><h2>📸 우리 여행 기록</h2><p>사진 ${photos}장 · 메모 ${mine.length - photos}개 · 걸은 길 ${walkedKm().toFixed(1)}km</p>
+  const head = shareCardHTML() + `<div class="day-hero"><h2>📸 우리 여행 기록</h2><p>사진 ${photos}장 · 메모 ${mine.length - photos}개 · 걸은 길 ${walkedKm().toFixed(1)}km</p>
     <button class="btn primary" style="height:44px;font-size:16px;margin-top:8px" data-rec-open="1">📸 사진·메모 남기기</button>
     <div class="links" style="margin-top:8px"><button class="small-btn" data-track-toggle="1">👣 발자취 ${JR.showTrack ? '숨기기' : '보기'}</button>${JR.track.length ? '<button class="small-btn" data-track-clear="1">발자취 지우기</button>' : ''}</div>
-    <p class="note">📡 GPS를 켜 두면 걸은 길이 지도에 파란 점선으로 남아요. 사진은 이 폰에만 저장되니 📤 공유로 단톡방이나 사진앱에도 옮겨 두세요.${isPWA() && !isStandalone() ? (mine.length ? ' 앱으로 설치해도 지금까지 기록은 옮겨지지 않아요 — 설치 전에 날짜별 📤 공유로 사진앱에 저장해 두세요.' : ' 홈 화면에 앱으로 먼저 설치하고 기록을 시작하면 사진이 더 안전하게 보관돼요.') : ''}</p></div>`;
+    <p class="note">📡 GPS를 켜 두면 걸은 길이 지도에 파란 점선으로 남아요. ${SH.client ? '사진은 공유 앨범에도 올라가요. 폰 사진앱에 남기려면 📤 공유 → 이미지 저장.' : '사진은 이 폰에만 저장되니 📤 공유로 단톡방이나 사진앱에도 옮겨 두세요.'}${isPWA() && !isStandalone() ? (mine.length ? ' 앱으로 설치해도 지금까지 기록은 옮겨지지 않아요 — 설치 전에 날짜별 📤 공유로 사진앱에 저장해 두세요.' : ' 홈 화면에 앱으로 먼저 설치하고 기록을 시작하면 사진이 더 안전하게 보관돼요.') : ''}</p></div>`;
   if (!mine.length) return head + '<div class="card"><p>아직 기록이 없어요. 지도 오른쪽 빨간 📸 버튼으로 첫 사진을 남겨 보세요!</p></div>';
   const groups = new Map();
-  for (const e of mine) { if (!groups.has(e.day)) groups.set(e.day, []); groups.get(e.day).push(e); }
+  for (const e of mine) { const d = albumDay(e); if (!groups.has(d)) groups.set(d, []); groups.get(d).push(e); }
   return head + [...groups.entries()].sort((a, b) => a[0] - b[0]).map(([d, list]) => `<div class="sec album-day">
     <div class="album-h"><h3>${d + 1}일차 · ${esc(C.days[d]?.chip || '')}</h3>${list.some(e => e.photo) ? `<button class="small-btn" data-share-day="${d}">${JR.prepared?.day === d ? shareLabel(JR.prepared) : '📤 이 날 사진 공유'}</button>` : ''}</div>
     <div class="album-grid">${list.map(albumItem).join('')}</div></div>`).join('');
+}
+
+// ---------- shared album (private GitHub repo; installed app / normal browser only) ----------
+const SH = { client: null, device: null, syncing: false, lastSync: store.get('shareSync', 0), err: null, tomb: store.get('tomb', []), timer: null };
+SH.device = store.get('device', null) || (() => { const d = 'd' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4); store.set('device', d); return d; })();
+{ const s = store.get('share', null); if (s?.token) SH.client = new ShareClient(s.token); }
+const shareAllowed = () => isPWA() && JR.ok; // the Claude viewer blocks calls to GitHub
+const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? '방금' : m < 60 ? `${m}분 전` : m < 1440 ? `${Math.round(m / 60)}시간 전` : `${Math.round(m / 1440)}일 전`; };
+function scheduleSync(ms = 1500) { if (!SH.client) return; clearTimeout(SH.timer); SH.timer = setTimeout(() => syncShare(), ms); }
+function metaOf(e) {
+  const { id, t, city, day, stop, lat, lng, acc, src, placeId, placeName, memo, rating, who, photo, owner } = e;
+  return { v: 1, id, t, city, day, stop, lat, lng, acc, src, placeId, placeName, memo, rating, who, whoName: crewDefs()[who]?.name || '', photo, owner: owner || SH.device };
+}
+const str = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
+const num = v => typeof v === 'number' && isFinite(v) ? v : null;
+const int = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi ? v : lo;
+function normMeta(m) { // records come from other phones: keep only known fields with the right types
+  if (!m || typeof m !== 'object') throw new Error('bad record');
+  const la = num(m.lat), lo = num(m.lng), ok = la != null && lo != null && Math.abs(la) <= 90 && Math.abs(lo) <= 180;
+  return { t: num(m.t) ?? 0, city: str(m.city, 40), day: int(m.day, 0, 60), stop: int(m.stop, 0, 99), lat: ok ? la : null, lng: ok ? lo : null, acc: num(m.acc),
+    src: str(m.src, 10), placeId: typeof m.placeId === 'string' ? m.placeId.slice(0, 80) : null, placeName: str(m.placeName, 80) || '어딘가', memo: str(m.memo, 300),
+    rating: int(m.rating, 0, 5), who: int(m.who, 0, 5), whoName: str(m.whoName, 20), photo: m.photo === true, owner: str(m.owner, 40) };
+}
+async function syncShare({ quiet = true } = {}) {
+  if (!SH.client || !JR.ok || !navigator.onLine) return;
+  if (SH.syncing) { SH.again = true; return; }
+  if (Date.now() < (SH.pauseUntil || 0)) return;
+  const client = SH.client;
+  SH.syncing = true; SH.err = null; shareRefresh();
+  let changed = false;
+  try {
+    // 1) upload my new/edited records (photos first, the record last, so friends never see a record without its photo)
+    for (const e of JR.entries.filter(x => !x.remote && x.sync !== 'done')) {
+      if (e.photo && (e.sync == null || e.sync === 'new')) { // records made before sharing have no sync state yet
+        const thumb = await J.getBlob(e.id, 'thumb').catch(() => null), full = await J.getBlob(e.id, 'full').catch(() => null);
+        if (thumb) await client.put(`t/${e.id}.jpg`, thumb, { message: 'thumb ' + e.id });
+        if (full) await client.put(`p/${e.id}.jpg`, full, { message: 'photo ' + e.id });
+      }
+      if (!JR.entries.includes(e)) continue; // deleted while its photo uploaded; the tombstone cleans up
+      const body = JSON.stringify(metaOf(e));
+      e.rsha = await client.put(`e/${e.id}.json`, body, { sha: e.rsha || null, message: 'record ' + e.id });
+      if (!JR.entries.includes(e)) continue;
+      e.sync = JSON.stringify(metaOf(e)) === body ? 'done' : 'dirty'; // edited during the upload → send again
+      if (e.sync === 'dirty') SH.again = true;
+      await J.saveEntry(e);
+    }
+    let tree = await client.tree();
+    // 2) remove what I deleted
+    if (SH.tomb.length) {
+      for (const id of [...SH.tomb]) {
+        for (const p of [`e/${id}.json`, `t/${id}.jpg`, `p/${id}.jpg`]) if (tree.has(p)) await client.del(p, tree.get(p));
+        SH.tomb = SH.tomb.filter(x => x !== id); store.set('tomb', SH.tomb);
+      }
+      tree = await client.tree();
+    }
+    // 3) pull friends' records (and mine from an earlier install)
+    const ids = new Set();
+    for (const [path, sha] of tree) {
+      const m = path.match(/^e\/([\w-]+)\.json$/); if (!m) continue;
+      const id = m[1]; ids.add(id);
+      if (SH.tomb.includes(id)) continue;
+      const local = JR.entries.find(x => x.id === id);
+      if (local && (!local.remote || local.rsha === sha)) continue;
+      let meta;
+      try { meta = normMeta(JSON.parse(await (await client.get(path)).text())); } catch (err) { if (err.rateLimited) throw err; console.warn('skip bad record', path, err); continue; }
+      const e = { ...meta, id, remote: meta.owner !== SH.device, rsha: sha, sync: 'done' };
+      const thumb = e.photo && !local && tree.has(`t/${id}.jpg`) ? await client.get(`t/${id}.jpg`).catch(() => null) : null;
+      if (e.photo && !local && tree.has(`t/${id}.jpg`) && !thumb) continue; // try again next sync instead of a blank tile forever
+      await J.saveEntry(e, thumb ? { thumb } : {});
+      if (local) Object.assign(local, e); else JR.entries.push(e);
+      changed = true;
+    }
+    // 4) drop friends' records their owners deleted
+    for (const e of JR.entries.filter(x => x.remote && !ids.has(x.id))) {
+      await J.deleteEntry(e.id).catch(() => {});
+      const u = JR.urls.get(e.id); if (u) { URL.revokeObjectURL(u); JR.urls.delete(e.id); }
+      JR.entries = JR.entries.filter(x => x !== e); changed = true;
+    }
+    JR.entries.sort((a, b) => a.t - b.t);
+    SH.lastSync = Date.now(); store.set('shareSync', SH.lastSync);
+    if (!quiet) toast('✅ 공유 앨범 동기화 완료');
+  } catch (err) {
+    SH.err = err; console.warn('share sync', err);
+    if (err.rateLimited) { SH.pauseUntil = err.retryAt; if (!quiet) toast('사진이 많아 GitHub가 잠깐 쉬래요 — 조금 뒤 자동으로 이어서 올릴게요', 3500); }
+    else if (err.status === 401 || err.status === 403 || err.status === 404) toast('공유 앨범 권한이 끊겼어요 — 앨범 탭에서 새 초대 링크를 넣어 주세요', 4500);
+    else if (!quiet) toast('동기화 실패 — 연결되면 다시 시도할게요', 3000);
+  } finally {
+    SH.syncing = false;
+    if (SH.again) { SH.again = false; scheduleSync(2000); }
+    if (changed) refreshJournal();
+    shareRefresh(changed);
+  }
+}
+function shareRefresh(changed = false) { if (C && (S.tab === 'album' || (changed && S.tab === 'here'))) renderBody(true); }
+function shareCardHTML() {
+  if (!shareAllowed()) return isPWA() ? '' : `<div class="card share-card"><h4>👥 6명 공유 앨범</h4><p>공유 앨범은 설치형 앱(깃허브 주소)에서만 돼요: <b>yjc20170201-sudo.github.io/mokbang6</b></p></div>`;
+  if (!SH.client) return `<div class="card share-card"><h4>👥 6명 공유 앨범</h4><p>모두가 찍은 사진이 한 앨범과 지도에 모여요. 방장이 한 번 만들고, 나머지는 카톡으로 받은 초대 링크 + 암호로 들어오면 돼요.</p>
+    <div class="links" style="margin-top:8px"><button class="small-btn" data-share-join="1">🔑 초대받았어요</button><button class="small-btn" data-share-create="1">👑 방장: 공유 앨범 만들기</button></div></div>`;
+  const pending = JR.entries.filter(e => !e.remote && e.sync !== 'done').length, friends = JR.entries.filter(e => e.remote).length;
+  const authBad = SH.err && !SH.err.rateLimited && [401, 403, 404].includes(SH.err.status);
+  const status = SH.syncing ? '🔄 동기화 중…' : authBad ? '🔑 토큰이 만료됐거나 권한이 없어요' : SH.err?.rateLimited ? '⏸️ GitHub 요청 한도 — 잠시 후 자동 재개' : SH.err ? '⚠️ 동기화 실패 (연결 확인)' : SH.lastSync ? `✅ ${ago(SH.lastSync)} 동기화` : '⏳ 첫 동기화 전';
+  return `<div class="card share-card on${authBad ? ' bad' : ''}"><h4>👥 공유 앨범 연결됨</h4><p>${status}${pending ? ` · 올릴 기록 ${pending}개` : ''} · 친구 기록 ${friends}개</p>
+    ${authBad ? '<div class="links" style="margin-top:8px"><button class="small-btn" data-share-join="1">🔑 새 초대 링크 넣기</button><button class="small-btn" data-share-create="1">👑 방장: 새 토큰 넣기</button></div>' : ''}
+    <div class="links" style="margin-top:8px"><button class="small-btn" data-share-sync="1">🔄 지금 동기화</button><button class="small-btn" data-share-invite="1">📨 친구 초대 링크</button><button class="small-btn" data-share-leave="1">연결 끊기</button></div></div>`;
+}
+function shareModal(html) { const el = $('#jModal'); closeJModal(); el.innerHTML = `<div class="modal jshare" role="dialog" aria-label="공유 앨범">${html}</div>`; el.hidden = false; el.dataset.mode = 'share'; }
+function openShareCreate() {
+  shareModal(`<h2 class="j-title">👑 공유 앨범 만들기</h2>
+    <p class="note">방장 한 명만 하면 돼요. 사진은 형님 GitHub의 <b>비공개</b> 저장소 <b>${REPO.name}</b>에 모여요.</p>
+    <ol class="mini-steps">
+      <li>아래 버튼으로 GitHub 토큰 만들기 화면을 열어요 (GitHub 로그인).</li>
+      <li><b>Token name</b>: mokbang6 · <b>Expiration</b>: 90 days</li>
+      <li><b>Repository access</b> → Only select repositories → <b>${REPO.name}</b></li>
+      <li><b>Permissions</b> → Repository permissions → <b>Contents: Read and write</b></li>
+      <li><b>Generate token</b> → 나온 <code>github_pat_…</code>를 복사해서 아래에 붙여넣기</li>
+    </ol>
+    <a class="btn map" style="width:100%;margin-top:8px" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">🔗 GitHub 토큰 만들기 열기</a>
+    <label class="j-label" for="shToken">토큰</label><input class="j-input" id="shToken" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_...">
+    <label class="j-label" for="shPass">그룹 암호 (친구들이 입력할 말 · 8글자 이상, 숫자만은 안 돼요)</label><input class="j-input" id="shPass" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="우리만 아는 말 8글자 이상">
+    <p class="note">토큰은 이 저장소 하나만 읽고 쓸 수 있어요(Fine-grained 토큰만 받아요). 초대 링크에는 암호로 잠근 토큰이 들어가요.</p>
+    <div class="j-actions"><button class="btn" data-jclose="1">취소</button><button class="btn primary" data-share-save="1">확인하고 만들기</button></div>`);
+}
+function openShareJoin(code = '') {
+  const ua = navigator.userAgent, inApp = /KAKAOTALK|NAVER|Instagram|FBAN|FBAV|Line\//i.test(ua), iosBrowser = /iPhone|iPad|iPod/i.test(ua) && !isStandalone();
+  const where = inApp || iosBrowser ? `<div class="card warn-soft" style="margin-top:8px"><p>${inApp ? '카톡·네이버 안 브라우저예요. 여기서 들어가면 이 창에서만 공유돼요.' : '사파리에서 열었어요.'} 홈 화면에 설치한 앱에서 쓰려면: <b>링크 복사 → 설치한 앱 열기 → 📸 앨범 → 🔑 초대받았어요 → 붙여넣기</b></p>${code ? `<button class="small-btn" style="margin-top:6px" data-share-copy="${esc(inviteURL(code))}">📋 초대 링크 복사</button>` : ''}</div>` : '';
+  shareModal(`<h2 class="j-title">🔑 공유 앨범 들어가기</h2>
+    <p class="note">방장이 카톡으로 보낸 초대 링크로 열었다면 암호만 넣으면 돼요.${SH.client ? ' (지금 연결을 새 초대로 바꿔요)' : ''}</p>${where}
+    <label class="j-label" for="shCode">초대 코드</label><textarea class="j-input" id="shCode" rows="2" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="초대 링크나 코드 붙여넣기">${esc(code)}</textarea>
+    <label class="j-label" for="shJoinPass">그룹 암호</label><input class="j-input" id="shJoinPass" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="방장이 알려준 암호">
+    <div class="j-actions"><button class="btn" data-jclose="1">나중에</button><button class="btn primary" data-share-joingo="1">들어가기</button></div>`);
+}
+function openShareInvite() {
+  shareModal(`<h2 class="j-title">📨 친구 초대 링크</h2>
+    <label class="j-label" for="shInvPass">그룹 암호 (처음 정한 암호)</label><input class="j-input" id="shInvPass" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="처음 정한 암호">
+    <div id="shInvOut"></div>
+    <div class="j-actions"><button class="btn" data-jclose="1">닫기</button><button class="btn primary" data-share-invgo="1">링크 만들기</button></div>`);
+}
+const inviteURL = code => `${location.origin}${location.pathname}#join=${code}`;
+function showInvite(code) {
+  const url = inviteURL(code), out = $('#shInvOut') || null;
+  const html = `<div class="card" style="margin-top:12px"><h4>✅ 초대 링크</h4><p class="note" style="word-break:break-all">${esc(url)}</p>
+    <div class="links" style="margin-top:8px"><button class="small-btn" data-share-send="${esc(url)}">📤 카톡으로 보내기</button><button class="small-btn" data-share-copy="${esc(url)}">📋 복사</button></div>
+    <p class="note" style="margin-top:6px">암호는 링크와 같이 보내지 말고 따로(말로·다른 메시지로) 알려 주세요.</p></div>`;
+  if (out) out.innerHTML = html; else shareModal(`<h2 class="j-title">👥 공유 앨범 준비 완료!</h2>${html}<div class="j-actions"><button class="btn primary" data-jclose="1">닫기</button></div>`);
+}
+async function onShareClick(q) {
+  let b;
+  if (q('[data-share-create]')) { openShareCreate(); return true; }
+  if (q('[data-share-join]')) { openShareJoin(); return true; }
+  if (q('[data-share-invite]')) { openShareInvite(); return true; }
+  if (q('[data-share-sync]')) { syncShare({ quiet: false }); return true; }
+  if ((b = q('[data-share-leave]'))) {
+    if (!b.dataset.sure) { b.dataset.sure = '1'; b.textContent = '정말 끊을까요? 한 번 더'; return true; }
+    SH.client = null; store.set('share', null); toast('공유 앨범 연결을 끊었어요 (폰에 있는 사진은 그대로)', 3000); renderBody(true); return true;
+  }
+  if (q('[data-share-save]')) {
+    const token = $('#shToken').value.trim(), pass = $('#shPass').value;
+    if (!/^github_pat_\w{60,}$/.test(token)) { toast('Fine-grained 토큰(github_pat_…) 전체를 붙여넣어 주세요', 3500); return true; }
+    if (pass.trim().length < 8 || /^\d+$/.test(pass.trim())) { toast('암호는 숫자만 말고 8글자 이상으로 정해 주세요', 3200); return true; }
+    const c = new ShareClient(token);
+    try { if (!(await c.check())) { toast('토큰 권한이 달라요 — Fine-grained 토큰에 Contents: Read and write로 만들어 주세요', 4200); return true; } }
+    catch (err) { toast(err.status === 401 ? '토큰이 틀렸거나 만료됐어요 — Generate token 후 전체를 다시 복사해 주세요' : err.status === 404 ? `토큰이 ${REPO.name} 저장소를 못 봐요 — Repository access를 확인해 주세요` : '확인 실패 — 인터넷 연결을 확인해 주세요', 4200); return true; }
+    SH.client = c; store.set('share', { token }); SH.err = null;
+    showInvite(await makeInvite(token, pass));
+    syncShare({ quiet: false });
+    return true;
+  }
+  if (q('[data-share-joingo]')) {
+    let code = $('#shCode').value.trim(); const m = code.match(/#join=([\w-]+)/); if (m) code = m[1];
+    const pass = $('#shJoinPass').value;
+    let token;
+    try { token = await openInvite(code, pass); } catch { toast('암호나 초대 코드가 달라요 — 다시 확인해 주세요', 3500); return true; }
+    if (!/^github_pat_\w{60,}$/.test(token)) { toast('초대 코드가 이상해요 — 방장에게 다시 받아 주세요', 3500); return true; }
+    const c = new ShareClient(token);
+    try { await c.check(); } catch (err) { toast(err.status === 401 || err.status === 404 ? '초대 링크가 만료됐어요 — 방장에게 새 링크를 받아 주세요' : '확인 실패 — 인터넷 연결을 확인해 주세요', 4000); return true; }
+    SH.client = c; store.set('share', { token }); SH.err = null; SH.pauseUntil = 0;
+    if (/join=/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search);
+    closeJModal(); toast('👥 공유 앨범에 들어왔어요! 사진을 받는 중…', 3000);
+    S.tab = 'album'; renderBody(); if (S.sheet === 'peek') setSheet('half');
+    syncShare({ quiet: false });
+    return true;
+  }
+  if (q('[data-share-invgo]')) {
+    const pass = $('#shInvPass').value; if (pass.trim().length < 8) { toast('처음 정한 그룹 암호(8글자 이상)를 넣어 주세요', 3000); return true; }
+    const token = store.get('share', null)?.token; if (!token) return true;
+    try { await new ShareClient(token).check(); } catch (err) { if ([401, 404].includes(err.status)) { toast('토큰이 만료됐거나 권한이 없어요 — 새 토큰을 넣어 주세요', 3800); openShareCreate(); return true; } }
+    showInvite(await makeInvite(token, pass)); return true;
+  }
+  if ((b = q('[data-share-send]'))) {
+    const url = b.dataset.shareSend, text = '🍜 6인 먹방원정대 공유 앨범 초대! 링크 열고 암호 넣으면 돼요 (암호는 따로 알려줄게)';
+    try { if (navigator.share) await navigator.share({ title: '6인 먹방원정대', text, url }); else { await navigator.clipboard.writeText(text + '\n' + url); toast('복사했어요 📋'); } } catch (err) { if (err?.name !== 'AbortError') toast('공유가 안 되면 복사 버튼을 쓰세요'); }
+    return true;
+  }
+  if ((b = q('[data-share-copy]'))) { navigator.clipboard?.writeText(b.dataset.shareCopy).then(() => toast('복사했어요 📋'), () => toast('길게 눌러서 복사해 주세요')); return true; }
+  return false;
 }
 
 // ---------- install as an app (GitHub Pages build only) ----------
@@ -1236,7 +1455,18 @@ async function loadCity(id, fresh) {
   world.setCrew(crewDefs());
   bindUI();
   if ('serviceWorker' in navigator && isPWA()) setupSW();
-  journalInit();
+  journalInit().then(() => {
+    if (!shareAllowed()) return;
+    const checkJoin = () => { // invite links: #join=<code>
+      const m = location.hash.match(/join=([\w-]+)/); if (!m) return;
+      openShareJoin(m[1]);
+    };
+    checkJoin(); window.addEventListener('hashchange', checkJoin);
+    scheduleSync(800);
+    setInterval(() => { if (document.visibilityState === 'visible') syncShare(); }, 90000);
+    window.addEventListener('online', () => scheduleSync(500));
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - SH.lastSync > 30000) scheduleSync(300); });
+  });
   if (!S.city) { $('#loading').hidden = true; openIntro(true); return; }
   try { await loadCity(S.city, false); } catch (e) { console.error(e); $('#loadingText').textContent = '불러오기 실패 — 새로고침 해주세요'; }
 })();
