@@ -56,7 +56,10 @@ const posOf = (p, rid = regionOf(p)) => proj(rid, p.lat, p.lng);
 const dist = (a, b) => Math.hypot(a.lat - b.lat, (a.lng - b.lng) * Math.cos(a.lat * Math.PI / 180)) * 111000;
 const walkMin = m => Math.max(1, Math.round(m * 1.3 / 75));
 const swapKey = (di, si) => `swap:${C.id}:${di}${C.days[di].isRain ? 'r' : ''}:${si}`;
-function stopPlaceId(di, si) { const st = C.days[di].stops[si]; return store.get(swapKey(di, si), null) || st.p; }
+function stopPlaceId(di, si) {
+  const st = C.days[di].stops[si], v = store.get(swapKey(di, si), null);
+  return v && C.places[v] && (v === st.p || (st.alts || []).includes(v)) ? v : st.p;
+}
 
 // ---------- rainy-day plans ----------
 // A day may carry rain: { chip, title, sub, note, stops }. Switched on, that version replaces the day everywhere.
@@ -133,7 +136,7 @@ function loadCrew() { // [{ c: character index, name }], 2–8 people
   const v2 = store.get('crew2', null);
   if (Array.isArray(v2) && v2.length >= 2) return v2.filter(m => CREW_DEFAULT[m?.c]).slice(0, 8);
   const old = store.get('crew', null); // first version: six names in fixed order
-  return CREW_DEFAULT.slice(0, 6).map((d, i) => ({ c: i, name: (Array.isArray(old) && typeof old[i] === 'string' && old[i]) || '' }));
+  return CREW_DEFAULT.slice(0, Array.isArray(old) ? 6 : 5).map((d, i) => ({ c: i, name: (Array.isArray(old) && typeof old[i] === 'string' && old[i]) || '' }));
 }
 function crewDefs() { return S.crew.map(m => ({ ...CREW_DEFAULT[m.c], name: m.name || CREW_DEFAULT[m.c].role, idx: m.c })); }
 const N = () => S.crew.length;
@@ -147,13 +150,22 @@ const fitN = t => N() === 6 || typeof t !== 'string' ? t : t.replace(/(^|[^\d])6
 const MODE = {
   walk: { ico: '🚶', name: '도보' }, metro: { ico: '🚇', name: '지하철' }, jr: { ico: '🚃', name: 'JR' }, private: { ico: '🚆', name: '전철' },
   taxi: { ico: '🚕', name: '택시' }, travel: { ico: '🚄', name: '특급열차' }, fly: { ico: '✈️', name: '비행기' }, bus: { ico: '🚌', name: '버스' },
-  boat: { ico: '🚤', name: '보트' }, stay: { ico: '📍', name: '같은 곳' }, pickup: { ico: '🚐', name: '샵 픽업' },
+  boat: { ico: '🚤', name: '보트' }, stay: { ico: '📍', name: '같은 곳' }, pickup: { ico: '🚐', name: '샵 픽업' }, free: { ico: '🧭', name: '길찾기' },
 };
 function lineInfo(id) { return C.lineInfo?.[id] || null; }
 function koSta(line, jp) { const L = lineInfo(line); const s = L?.st.find(([j]) => j === jp); return s ? s[1] : jp; }
 const ridesOf = leg => leg.rides || (leg.line ? [{ line: leg.line, from: leg.from, to: leg.to }] : []);
+// the stop's written route describes its original pick; a swapped-in place over ~1 km away gets plain map directions
+function legOf(di, si) {
+  const st = C.days[di].stops[si], id = stopPlaceId(di, si);
+  if (!st.leg || id === st.p) return st.leg;
+  const a = place(st.p), b = place(id);
+  if (a?.lat != null && b?.lat != null && dist(a, b) > 1000) return { m: 'free' };
+  return { ...st.leg, note: null, ...(st.leg.m === 'pickup' ? { m: 'taxi' } : {}) };
+}
 function legSummary(leg) {
   if (!leg) return '';
+  if (leg.m === 'free') return `${MODE.free.ico} 구글맵으로 길찾기`;
   const M = MODE[leg.m] || MODE.walk;
   const parts = [];
   if (leg.m === 'walk') parts.push(`도보 ${leg.min || '?'}분`);
@@ -167,6 +179,7 @@ function legSummary(leg) {
 }
 function legSteps(leg, from, to) {
   if (!leg) return [];
+  if (leg.m === 'free') return to ? [{ i: '🧭', t: `<a href="${gmapsDir(to, 'transit')}" target="_blank" rel="noopener">구글맵 대중교통 길찾기</a>`, s: to.sta }] : [];
   const steps = [];
   if (leg.m === 'walk' || leg.m === 'stay') steps.push({ i: '🚶', t: `${to ? esc(to.nameKo) + '까지 ' : ''}걸어서 약 ${leg.min || walkMin(from && to ? dist(from, to) : 300)}분`, s: leg.note });
   else if (['metro', 'jr', 'private'].includes(leg.m)) {
@@ -190,7 +203,7 @@ function legSteps(leg, from, to) {
 // ---------- path planning in a region ----------
 function segmentsFor(di, si) {
   const R = world.region; if (!R) return [];
-  const st = C.days[di].stops[si], leg = st.leg || { m: 'walk' };
+  const st = C.days[di].stops[si], leg = legOf(di, si) || { m: 'walk' };
   const to = stopPlace(di, si), rid = regionOf(to);
   const prevIdx = si - 1; if (prevIdx < 0) return [];
   const from = stopPlace(di, prevIdx);
@@ -522,7 +535,7 @@ function renderHead() {
       <div class="stop-meta"><span class="kind ${K.cls}">${esc(st.k)}</span>${indoorChip(p)}<span class="tnum">${st.t}</span><span>· ${S.stop + 1}/${C.days[S.day].stops.length}</span>${p.area ? `<span>· ${esc(p.area)}</span>` : ''}</div>
       <h2 class="stop-name">${esc(stopName())}</h2>
     </div>
-    ${st.leg ? `<div class="leg-line">${legSummary(st.leg)}</div>` : ''}`;
+    ${st.leg ? `<div class="leg-line">${legSummary(legOf(S.day, S.stop))}</div>` : ''}`;
   const nav = $('#navBtn');
   nav.href = st.leg?.m === 'walk' ? gmapsDir(p, 'walking') : gmapsDir(p, 'transit');
   renderActions(next);
@@ -576,10 +589,50 @@ function placeCore(p) {
     ${p.gear ? `<div class="sec"><h3>🎒 장비</h3><p style="margin:0;font-size:13.5px;color:var(--ink-2)">${esc(p.gear)}</p></div>` : ''}
     <div class="sec links"><a href="${gmapsSearch(p)}" target="_blank" rel="noopener">📍 구글맵에서 보기</a><a href="${gmapsDir(p)}" target="_blank" rel="noopener">🧭 여기로 길찾기</a>${realViewLinks(p)}${p.nameJa && CAT[p.cat]?.g !== 'see' ? `<a href="https://tabelog.com/rstLst/?sw=${encodeURIComponent(p.nameJa)}" target="_blank" rel="noopener">⭐ 타베로그 리뷰</a>` : ''}</div>`;
 }
+// ---------- doubles rotation & scoreboard (tennis stops) ----------
+// One court, everyone plays: 4 on court, the rest sit out in turn, partners rotate so nobody is stuck with the same pair.
+function rotation(n, games = 15) {
+  if (n < 2) return [];
+  if (n < 4) return Array.from({ length: games }, (_, g) => { const rest = n === 3 ? [g % 3] : [], on = [...Array(n).keys()].filter(i => !rest.includes(i)); return { teams: [[on[0]], [on[1]]], rest }; });
+  const play = Array(n).fill(0), last = Array(n).fill(-9), P = [...Array(n)].map(() => Array(n).fill(0)), O = [...Array(n)].map(() => Array(n).fill(0)), out = [], quads = [];
+  for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) for (let c = b + 1; c < n; c++) for (let d = c + 1; d < n; d++) quads.push([a, b, c, d]);
+  for (let g = 0; g < games; g++) {
+    let best = null, bc = Infinity;
+    for (const [a, b, c, d] of quads) for (const t of [[[a, b], [c, d]], [[a, c], [b, d]], [[a, d], [b, c]]]) {
+      const cost = [a, b, c, d].reduce((s, i) => s + play[i] * 1000 + last[i] * 10, 0) + 4 * (P[t[0][0]][t[0][1]] ** 2 + P[t[1][0]][t[1][1]] ** 2)
+        + t[0].reduce((s, i) => s + t[1].reduce((u, j) => u + O[i][j] ** 2, 0), 0);
+      if (cost < bc) { bc = cost; best = t; }
+    }
+    best.forEach(t => { t.forEach(i => { play[i]++; last[i] = g; }); P[t[0]][t[1]]++; P[t[1]][t[0]]++; });
+    best[0].forEach(i => best[1].forEach(j => { O[i][j]++; O[j][i]++; }));
+    out.push({ teams: best, rest: [...Array(n).keys()].filter(i => !best.flat().includes(i)) });
+  }
+  return out;
+}
+const leagueKey = () => `league:${C.id}:${S.day}${C.days[S.day].isRain ? 'r' : ''}:${S.stop}:${S.crew.map(m => m.c).join('.')}`;
+function leagueHTML() {
+  const defs = crewDefs(), n = defs.length, games = rotation(n, n >= 4 ? Math.max(12, n * 3) : 9);
+  const res = store.get(leagueKey(), {}) || {};
+  const nm = i => esc(defs[i]?.name || '');
+  const team = (g, t) => g.teams[t].map(nm).join(' · ');
+  const win = defs.map(() => 0), play = defs.map(() => 0);
+  games.forEach((g, gi) => { const r = res[gi]; if (r !== 0 && r !== 1) return; g.teams.forEach((t, ti) => t.forEach(i => { play[i]++; if (ti === r) win[i]++; })); });
+  const done = games.filter((_, gi) => res[gi] === 0 || res[gi] === 1).length;
+  const table = defs.map((d, i) => ({ i, w: win[i], l: play[i] - win[i] })).sort((a, b) => b.w - a.w || a.l - b.l);
+  const rows = games.map((g, gi) => `<li class="lg-row${res[gi] === 0 || res[gi] === 1 ? ' done' : ''}"><span class="lg-n">${gi + 1}</span>
+      <button class="lg-t${res[gi] === 0 ? ' won' : ''}" data-lg="${gi}:0">${team(g, 0)}</button><span class="lg-vs">vs</span>
+      <button class="lg-t${res[gi] === 1 ? ' won' : ''}" data-lg="${gi}:1">${team(g, 1)}</button>
+      ${g.rest.length ? `<span class="lg-rest">☕ ${g.rest.map(nm).join('·')}</span>` : ''}</li>`).join('');
+  return `<div class="sec"><h3>🎾 ${n >= 4 ? '복식' : '단식'} 로테이션 · 원정대 리그</h3>
+    <p class="note">${n >= 4 ? `코트 1면에서 ${n}명이 돌아가며 쳐요. 쉬는 사람(☕)이 차례로 바뀌고 파트너도 계속 바뀌어요.` : '인원이 적어 단식으로 돌려요.'} 이긴 팀을 누르면 기록돼요.${n >= 7 ? ' 7명 이상이면 코트 2면이 더 좋아요.' : ''}</p>
+    ${done ? `<div class="card lg-table">${table.map((r, k) => `<span>${k === 0 && r.w ? '🏆 ' : ''}${nm(r.i)} <b>${r.w}승 ${r.l}패</b></span>`).join('')}</div>` : ''}
+    <ol class="lg">${rows}</ol>
+    ${done ? '<button class="small-btn" data-lg-reset="1">기록 지우기</button>' : ''}</div>`;
+}
 function hereHTML() {
   const st = curStop(), p = stopPlace(), prev = S.stop ? stopPlace(S.day, S.stop - 1) : null;
   const mainId = stopPlaceId(S.day, S.stop), swapped = mainId !== st.p;
-  const leg = swapped && st.leg ? { ...st.leg, note: null, ...(st.leg.m === 'pickup' ? { m: 'taxi' } : {}) } : st.leg;
+  const leg = legOf(S.day, S.stop);
   const steps = legSteps(leg, prev, p);
   const alts = (st.alts || []).map(place).filter(Boolean);
   const allOpts = swapped ? [place(st.p), ...alts.filter(a => a.id !== mainId)] : alts;
@@ -590,6 +643,7 @@ function hereHTML() {
     ${st.say && swapped ? `<p class="note sec">🔁 원래 추천(${esc(place(st.p)?.nameKo || '')}) 대신 고른 곳이에요. 이 곳 정보는 아래 카드를 보세요.</p>` : ''}
     ${st.say && !swapped ? `<div class="sec guide"><div class="face" aria-hidden="true">${guideDef().emoji}</div><div class="bubble"><b>${esc(guideDef().name)}</b> ${esc(fitN(st.say))}</div></div>` : ''}
     ${steps.length ? `<div class="sec"><h3>🧭 여기까지 가는 법</h3><ol class="steps">${steps.map(s => `<li><span class="n">${s.i}</span><span class="t">${s.t}${s.s ? `<small>${esc(s.s)}</small>` : ''}</span></li>`).join('')}</ol></div>` : ''}
+    ${st.k === '테니스' ? leagueHTML() : ''}
     ${journalStrip(p)}
     <div class="sec">${placeCore(p)}</div>
     ${p.cat === 'hotel' ? hotelHTML(p) : ''}
@@ -597,7 +651,7 @@ function hereHTML() {
 }
 function altRow(a, from) {
   const m = from ? dist(from, a) : 0;
-  return `<button class="alt" data-place="${a.id}"><span class="e">${catOf(a).e}</span><span><span class="nm">${esc(a.nameKo)}</span><span class="ds" style="display:block">${esc(indoorPre(a) + (a.desc || ''))}</span></span><span class="dist">${from ? (m > 2500 ? `🚃 ${(m / 1000).toFixed(1)}km` : `🚶 ${walkMin(m)}분`) : ''}<br>${a.price ? priceText(a.price) : ''}</span></button>`;
+  return `<button class="alt" data-place="${a.id}"><span class="e">${catOf(a).e}</span><span><span class="nm">${esc(a.nameKo)}${closedOn(a, tripDate(S.day)) ? ' <b class="closed-tag">휴무일!</b>' : ''}</span><span class="ds" style="display:block">${esc(indoorPre(a) + (a.desc || ''))}</span></span><span class="dist">${from ? (m > 2500 ? `🚃 ${(m / 1000).toFixed(1)}km` : `🚶 ${walkMin(m)}분`) : ''}<br>${a.price ? priceText(a.price) : ''}</span></button>`;
 }
 function placeHTML(id, withBack) {
   const p = place(id); if (!p) return '';
@@ -622,7 +676,7 @@ function planHTML() {
     <div class="budget"><span>🍽️ 먹고 마시고 ${yen(b.food)}</span><span>🚃 교통 ${yen(b.move)}</span><span>💰 1인 약 ${won(b.total)}</span></div></div>
     <ol class="tl">${d.stops.map((st, si) => {
       const p = stopPlace(S.day, si), K = kindOf(st);
-      return `<li class="${si < S.stop ? 'done' : ''}">${si && st.leg ? `<div class="mv">${legSummary(st.leg).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')}</div>` : ''}
+      return `<li class="${si < S.stop ? 'done' : ''}">${si && st.leg ? `<div class="mv">${legSummary(legOf(S.day, si)).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')}</div>` : ''}
         <button data-jump="${si}" aria-current="${si === S.stop}"><span class="tm">${st.t}</span><span class="em">${st.e || catOf(p).e}</span><span><span class="nm">${esc(stopName(S.day, si))}</span><span class="sb" style="display:block"><span class="kind ${K.cls}" style="height:18px;font-size:11px">${esc(st.k)}</span> ${indoorChip(p, 'height:18px;font-size:11px')} ${esc(p.area || '')}${closedOn(p, dd) ? ' <b class="closed-tag">휴무일!</b>' : (p.closed?.length ? ` · ${p.closed.map(x => DOW[x]).join('·')} 휴무` : '')}</span></span></button></li>`;
     }).join('')}</ol>
     ${d.note ? `<div class="sec card"><p>💡 ${esc(fitN(d.note))}</p></div>` : ''}`;
@@ -634,7 +688,8 @@ function nearHTML() {
   const groups = [['all', '전체'], ['food', '🍚 밥'], ['snack', '🍡 간식·카페'], ['drink', '🍺 술'], ['see', '👀 볼거리'], ['shop', '🛍️ 쇼핑']];
   let list = Object.values(C.places).filter(p => p.lat != null && regionOf(p) === oRegion && p.id !== origin.id);
   if (S.nearFilter !== 'all') list = list.filter(p => (CAT[p.cat]?.g || 'see') === S.nearFilter);
-  list = list.map(p => ({ p, m: dist(origin, p), open: isOpen(p, dow, min) }));
+  const jpIso = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo' }).format(new Date());
+  list = list.map(p => ({ p, m: dist(origin, p), open: (p.onlyDates && !p.onlyDates.includes(jpIso)) || (p.closedDates || []).includes(jpIso) ? false : isOpen(p, dow, min) }));
   if (S.openNow) list = list.filter(x => x.open);
   list.sort((a, b) => a.m - b.m);
   const gpsOn = GPS.watch != null;
@@ -658,6 +713,8 @@ function tipsHTML() {
     sec('🗣️ 일본어 한마디 (화면 보여주기)', `<div class="card">${phrasesFor(N()).map((p, i) => `<div class="phrase"><span class="ko">${esc(p.ko)}</span><span class="jp">${esc(p.jp)}</span><span class="rd">${esc(p.rd)}</span><button class="small-btn" data-copy="${i}">복사</button></div>`).join('')}</div>`),
     T.diving ? sec('🤿 프리다이빙 안전·규칙', ul(T.diving)) : '',
     T.tennis ? sec('🎾 테니스 예약', ul(T.tennis)) : '',
+    T.tennisPrep?.length ? sec('✅ 테니스 출발 전 할 일', ul(T.tennisPrep)) : '',
+    T.tennisEvents?.length ? sec('🏆 프로 대회 관람 (날짜가 맞으면)', ul(T.tennisEvents)) : '',
     sec('⚠️ 2026년 바뀐 것들', ul(T.changes || [])),
     T.general ? sec('🇯🇵 일본 기본 상식', ul(T.general)) : '',
     T.money ? sec('💴 환전 · 카드 · 현금', ul(T.money)) : '',
@@ -703,6 +760,8 @@ function bindUI() {
     if ((b = q('[data-swap]'))) { store.set(swapKey(S.day, S.stop), b.dataset.swap); S.viewPlace = null; toast('이 집으로 바꿨어요! 🔁'); showStop(); return; }
     if ((b = q('[data-unswap]'))) { store.set(swapKey(S.day, S.stop), null); showStop(); return; }
     if ((b = q('[data-rain]'))) { setRain(S.day, b.dataset.rain === '1'); return; }
+    if ((b = q('[data-lg]'))) { const [gi, t] = b.dataset.lg.split(':').map(Number); const r = store.get(leagueKey(), {}) || {}; r[gi] = r[gi] === t ? null : t; store.set(leagueKey(), r); renderBody(true); return; }
+    if ((b = q('[data-lg-reset]'))) { if (!b.dataset.sure) { b.dataset.sure = '1'; b.textContent = '정말 지울까요? 한 번 더'; return; } store.set(leagueKey(), null); renderBody(true); return; }
     if ((b = q('[data-filter]'))) { S.nearFilter = b.dataset.filter; renderBody(); return; }
     if ((b = q('[data-open]'))) { S.openNow = !S.openNow; renderBody(); return; }
     if ((b = q('[data-sethere]'))) { if (JR.picking) cancelPick(); setHereMode(true); return; }
@@ -1495,7 +1554,7 @@ function openIntro(first = false) {
   el.innerHTML = `<div class="modal" role="dialog" aria-labelledby="introTitle">
     <span class="eyebrow">제주 → 일본 · 4박 5일 · 40대 <span id="crewCount">${N()}</span>인</span>
     <h1 class="intro-title" id="introTitle"><span id="crewCount2">${N()}</span>인 <em>먹방</em>원정대</h1>
-    <p class="lede">아침 밥부터 마지막 해장 라멘까지, 원정대가 3D 지도 위를 걸으며 맛집·이동법·술집을 안내해요. 프리다이빙 하루, 테니스 하루 포함.</p>
+    <p class="lede">아침 밥부터 마지막 해장 라멘까지, 원정대가 3D 지도 위를 걸으며 맛집·이동법·술집을 안내해요. 테니스 이틀 포함.</p>
     <div class="city-pick">
       ${['osaka', 'tokyo'].map(id => { const m = CITY_META[id]; return `<button class="city-card" data-city="${id}" aria-pressed="${S.city === id}"><span class="nm">${m.emoji} ${m.name}</span><ul>${m.points.map(x => `<li>${esc(x)}</li>`).join('')}</ul></button>`; }).join('')}
     </div>
@@ -1535,8 +1594,8 @@ function openIntro(first = false) {
   };
 }
 const CITY_META = {
-  osaka: { emoji: '🐙', name: '오사카', points: ['제주 직항 매일 (16:05→17:55)', '시라하마 바다 프리다이빙', '쿠시카츠·오코노미야키·고베규', '실제 여행 약 3.5일'] },
-  tokyo: { emoji: '🗼', name: '도쿄', points: ['대한항공 직항 주 4회 (월·수·금·일)', '이즈 바다 프리다이빙', '츠키지·몬자·골든가이', '규모 크고 이동 많음'] },
+  osaka: { emoji: '🐙', name: '오사카', points: ['제주 직항 매일 (16:05→17:55)', '테니스 두 번 (실내 코트)', '쿠시카츠·오코노미야키·고베규', '실제 여행 약 3.5일'] },
+  tokyo: { emoji: '🗼', name: '도쿄', points: ['대한항공 직항 주 4회 (월·수·금·일)', '테니스 두 번 (새벽 하드·실내 코트)', '츠키지·몬자·골든가이', '규모 크고 이동 많음'] },
 };
 
 async function loadCity(id, fresh) {
