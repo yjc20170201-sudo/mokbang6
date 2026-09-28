@@ -470,7 +470,7 @@ function renderHead() {
   $('#sheetHead').innerHTML = `
     <div class="stop-head">
       <div class="stop-emoji" aria-hidden="true">${st.e || catOf(p).e}</div>
-      <div class="stop-meta"><span class="kind ${K.cls}">${esc(st.k)}</span><span class="tnum">${st.t}</span><span>· ${S.stop + 1}/${C.days[S.day].stops.length}</span>${p.area ? `<span>· ${esc(p.area)}</span>` : ''}</div>
+      <div class="stop-meta"><span class="kind ${K.cls}">${esc(st.k)}</span>${indoorChip(p)}<span class="tnum">${st.t}</span><span>· ${S.stop + 1}/${C.days[S.day].stops.length}</span>${p.area ? `<span>· ${esc(p.area)}</span>` : ''}</div>
       <h2 class="stop-name">${esc(st.label || p.nameKo)}</h2>
     </div>
     ${st.leg ? `<div class="leg-line">${legSummary(st.leg)}</div>` : ''}`;
@@ -501,12 +501,16 @@ function renderParty() {
   $('#partyText').textContent = busy ? `${MODE[st.leg?.m]?.ico || '🚶'} ${short(stopPlace().nameKo)}(으)로 이동 중` : `${st.e || ''} ${st.k} 중 · ${N()}명`;
 }
 
+// indoor/outdoor tag for courts and pools (p.indoor: 'all' | 'some' | 'none', p.courts: court summary)
+const INDOOR = { all: ['k-in', '🏠 실내'], some: ['k-in', '🏠 실내 코트 있음'], none: ['k-out', '☀️ 실외만'] };
+const indoorChip = (p, style = '') => INDOOR[p?.indoor] ? `<span class="kind ${INDOOR[p.indoor][0]}"${style ? ` style="${style}"` : ''}>${INDOOR[p.indoor][1]}</span>` : '';
+const indoorPre = p => INDOOR[p?.indoor] ? INDOOR[p.indoor][1] + ' · ' : '';
 function infoGrid(p) {
   const g6 = { easy: ['easy', `👍 ${N()}명 바로 OK`], reserve: ['reserve', '📞 예약하면 OK'], split: ['split', N() <= 4 ? '🪑 카운터석 위주' : `✂️ ${splitText(N())} 나눠 앉기`] }[p.g6] || null;
   const cells = [
     ['영업시간', p.hours || '—'], ['가격 (1인)', p.price ? `${priceText(p.price)} · ${won((p.price[0] + p.price[1]) / 2)}` : '—'],
     [`${N()}명 자리`, g6 ? `<span class="g6 ${g6[0]}">${g6[1]}</span>` : '—'], ['결제', p.cash === true ? '💴 현금만' : p.cash === false ? '💳 카드 OK' : '—'],
-    ['예약', p.reserve || '—'], ['가까운 역', p.sta || '—'],
+    ['예약', p.reserve || '—'], ['가까운 역', p.sta || '—'], ['코트', p.courts || '—'],
   ];
   const shown = cells.filter(([, v]) => v && v !== '—');
   return shown.length ? `<dl class="grid2">${shown.map(([k, v]) => `<div class="cell"><dt>${k}</dt><dd>${v.startsWith('<') ? v : esc(v)}</dd></div>`).join('')}</dl>` : '';
@@ -518,6 +522,7 @@ function placeCore(p) {
     ${p.menu?.length ? `<div class="sec"><h3>🍽️ 이거 시켜요</h3><ul class="menu">${p.menu.map(m => `<li>${esc(m)}</li>`).join('')}</ul></div>` : ''}
     <div class="sec">${infoGrid(p)}</div>
     ${p.tips?.length ? `<div class="sec"><h3>💡 알아두면 좋은 것</h3><ul class="tips">${p.tips.map(t => `<li>${esc(fitN(t))}</li>`).join('')}</ul></div>` : ''}
+    ${p.rain ? `<div class="sec"><h3>☔ 비 오면</h3><div class="card"><p>${esc(fitN(p.rain))}</p></div></div>` : ''}
     ${p.booking ? `<div class="sec"><h3>📅 예약 방법</h3><div class="card"><p>${esc(p.booking.how || '')}</p>${p.booking.lang ? `<p class="note">언어: ${esc(p.booking.lang)}${p.booking.lead ? ' · ' + esc(p.booking.lead) : ''}</p>` : ''}${p.booking.url ? `<div class="links" style="margin-top:8px"><a href="${esc(p.booking.url)}" target="_blank" rel="noopener">예약 페이지 열기 ↗</a></div>` : ''}</div></div>` : ''}
     ${p.gear ? `<div class="sec"><h3>🎒 장비</h3><p style="margin:0;font-size:13.5px;color:var(--ink-2)">${esc(p.gear)}</p></div>` : ''}
     <div class="sec links"><a href="${gmapsSearch(p)}" target="_blank" rel="noopener">📍 구글맵에서 보기</a><a href="${gmapsDir(p)}" target="_blank" rel="noopener">🧭 여기로 길찾기</a>${realViewLinks(p)}${p.nameJa && CAT[p.cat]?.g !== 'see' ? `<a href="https://tabelog.com/rstLst/?sw=${encodeURIComponent(p.nameJa)}" target="_blank" rel="noopener">⭐ 타베로그 리뷰</a>` : ''}</div>`;
@@ -540,14 +545,14 @@ function hereHTML() {
 }
 function altRow(a, from) {
   const m = from ? dist(from, a) : 0;
-  return `<button class="alt" data-place="${a.id}"><span class="e">${catOf(a).e}</span><span><span class="nm">${esc(a.nameKo)}</span><span class="ds" style="display:block">${esc(a.desc || '')}</span></span><span class="dist">${from ? `🚶 ${walkMin(m)}분` : ''}<br>${a.price ? priceText(a.price) : ''}</span></button>`;
+  return `<button class="alt" data-place="${a.id}"><span class="e">${catOf(a).e}</span><span><span class="nm">${esc(a.nameKo)}</span><span class="ds" style="display:block">${esc(indoorPre(a) + (a.desc || ''))}</span></span><span class="dist">${from ? `🚶 ${walkMin(m)}분` : ''}<br>${a.price ? priceText(a.price) : ''}</span></button>`;
 }
 function placeHTML(id, withBack) {
   const p = place(id); if (!p) return '';
   const st = curStop(), isAlt = (st.alts || []).includes(id) || id === st.p;
   const inPlan = C.days.some((d, di) => d.stops.some((s, si) => stopPlaceId(di, si) === id));
   return `${withBack ? `<button class="small-btn" data-back="1">◀ 지금 일정으로</button>` : ''}
-    <div class="sec"><div class="stop-meta" style="margin-top:12px"><span class="kind">${catOf(p).e} ${esc(catOf(p).n)}</span>${p.area ? `<span>${esc(p.area)}</span>` : ''}</div><h2 class="stop-name" style="margin-top:4px">${esc(p.nameKo)}</h2></div>
+    <div class="sec"><div class="stop-meta" style="margin-top:12px"><span class="kind">${catOf(p).e} ${esc(catOf(p).n)}</span>${indoorChip(p)}${p.area ? `<span>${esc(p.area)}</span>` : ''}</div><h2 class="stop-name" style="margin-top:4px">${esc(p.nameKo)}</h2></div>
     ${isAlt && id !== stopPlaceId(S.day, S.stop) && p.region !== 'none' ? `<button class="btn primary" style="width:100%;margin-top:12px;height:44px;font-size:16px" data-swap="${id}">🔁 이 집으로 바꾸기</button>` : ''}
     ${inPlan && !isAlt ? `<p class="note">일정에 들어 있는 곳이에요.</p>` : ''}
     <div class="sec">${placeCore(p)}</div>`;
@@ -566,7 +571,7 @@ function planHTML() {
     <ol class="tl">${d.stops.map((st, si) => {
       const p = stopPlace(S.day, si), K = kindOf(st);
       return `<li class="${si < S.stop ? 'done' : ''}">${si && st.leg ? `<div class="mv">${legSummary(st.leg).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')}</div>` : ''}
-        <button data-jump="${si}" aria-current="${si === S.stop}"><span class="tm">${st.t}</span><span class="em">${st.e || catOf(p).e}</span><span><span class="nm">${esc(st.label || p.nameKo)}</span><span class="sb" style="display:block"><span class="kind ${K.cls}" style="height:18px;font-size:11px">${esc(st.k)}</span> ${esc(p.area || '')}${closedOn(p, dd) ? ' <b class="closed-tag">휴무일!</b>' : (p.closed?.length ? ` · ${p.closed.map(x => DOW[x]).join('·')} 휴무` : '')}</span></span></button></li>`;
+        <button data-jump="${si}" aria-current="${si === S.stop}"><span class="tm">${st.t}</span><span class="em">${st.e || catOf(p).e}</span><span><span class="nm">${esc(st.label || p.nameKo)}</span><span class="sb" style="display:block"><span class="kind ${K.cls}" style="height:18px;font-size:11px">${esc(st.k)}</span> ${indoorChip(p, 'height:18px;font-size:11px')} ${esc(p.area || '')}${closedOn(p, dd) ? ' <b class="closed-tag">휴무일!</b>' : (p.closed?.length ? ` · ${p.closed.map(x => DOW[x]).join('·')} 휴무` : '')}</span></span></button></li>`;
     }).join('')}</ol>
     ${d.note ? `<div class="sec card"><p>💡 ${esc(fitN(d.note))}</p></div>` : ''}`;
 }
@@ -584,7 +589,7 @@ function nearHTML() {
   return `<div class="origin">기준: <b>${esc(origin.nameKo)}</b></div>
     <div class="origin">${gpsOn ? `<button class="small-btn" data-gpsoff="1">📡 GPS 끄기</button>` : `<button class="small-btn" data-gps="1">📡 GPS로 내 위치</button>`}<button class="small-btn" data-sethere="1">👆 지도에서 찍기</button>${S.here ? `<button class="small-btn" data-clearhere="1">일정 기준으로</button>` : ''}</div>
     <div class="filters">${groups.map(([k, n]) => `<button class="chip" data-filter="${k}" aria-pressed="${S.nearFilter === k}">${n}</button>`).join('')}<button class="chip" data-open="1" aria-pressed="${S.openNow}">🟢 지금 영업중 (일본 ${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')})</button></div>
-    ${list.length ? list.slice(0, 40).map(({ p, m, open }) => `<button class="alt" data-place="${p.id}"><span class="e">${catOf(p).e}</span><span><span class="nm">${esc(p.nameKo)}</span><span class="ds" style="display:block">${open === true ? '🟢 영업중 · ' : open === false ? '⚪ 영업 전/후 · ' : ''}${esc(p.desc || p.area || '')}</span></span><span class="dist">🚶 ${m > 2500 ? (m / 1000).toFixed(1) + 'km' : walkMin(m) + '분'}<br>${p.price ? priceText(p.price) : ''}</span></button>`).join('') : `<p class="note">조건에 맞는 곳이 없어요. 필터를 바꿔 보세요.</p>`}
+    ${list.length ? list.slice(0, 40).map(({ p, m, open }) => `<button class="alt" data-place="${p.id}"><span class="e">${catOf(p).e}</span><span><span class="nm">${esc(p.nameKo)}</span><span class="ds" style="display:block">${open === true ? '🟢 영업중 · ' : open === false ? '⚪ 영업 전/후 · ' : ''}${esc(indoorPre(p) + (p.desc || p.area || ''))}</span></span><span class="dist">🚶 ${m > 2500 ? (m / 1000).toFixed(1) + 'km' : walkMin(m) + '분'}<br>${p.price ? priceText(p.price) : ''}</span></button>`).join('') : `<p class="note">조건에 맞는 곳이 없어요. 필터를 바꿔 보세요.</p>`}
     <p class="note" style="margin-top:12px">거리는 직선거리 기준 도보 추정이에요. 실제 길은 🧭 길찾기로 확인하세요.</p>`;
 }
 function tipsHTML() {
