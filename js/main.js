@@ -55,14 +55,49 @@ function proj(rid, lat, lng) { // same projection as tools/fetch-geo.mjs
 const posOf = (p, rid = regionOf(p)) => proj(rid, p.lat, p.lng);
 const dist = (a, b) => Math.hypot(a.lat - b.lat, (a.lng - b.lng) * Math.cos(a.lat * Math.PI / 180)) * 111000;
 const walkMin = m => Math.max(1, Math.round(m * 1.3 / 75));
-function stopPlaceId(di, si) { const st = C.days[di].stops[si]; return store.get(`swap:${C.id}:${di}:${si}`, null) || st.p; }
+const swapKey = (di, si) => `swap:${C.id}:${di}${C.days[di].isRain ? 'r' : ''}:${si}`;
+function stopPlaceId(di, si) { const st = C.days[di].stops[si]; return store.get(swapKey(di, si), null) || st.p; }
+
+// ---------- rainy-day plans ----------
+// A day may carry rain: { chip, title, sub, note, stops }. Switched on, that version replaces the day everywhere.
+const rainKey = di => `rain:${C.id}:${di}`;
+const rainDay = d => d._rainDay || (d._rainDay = { ...d.rain, isRain: true, dry: d });
+const dryOf = di => C.daysDry?.[di] || C.days[di];
+function applyRain() {
+  C.daysDry = C.daysDry || C.days.slice();
+  C.days = C.daysDry.map((d, di) => d.rain && store.get(rainKey(di), false) ? rainDay(d) : d);
+}
+function setRain(di, on) {
+  if (busy) return;
+  store.set(rainKey(di), on ? true : null);
+  applyRain();
+  if (S.day === di) { S.stop = 0; S.viewPlace = null; store.set('pos', { city: C.id, day: S.day, stop: S.stop }); }
+  GPS.dismissed = null;
+  toast(on ? '☔ 비 오는 날 플랜으로 바꿨어요' : '🌤️ 원래 일정으로 돌아왔어요', 2600);
+  showStop();
+}
+function albumChip(d, list) { // which plan version the day's photos came from
+  const dry = dryOf(d);
+  if (!dry?.rain) return dry?.chip || '';
+  const dryIds = new Set(dry.stops.map(s => s.p)), rainIds = new Set(dry.rain.stops.map(s => s.p));
+  const r = list.some(e => rainIds.has(e.placeId) && !dryIds.has(e.placeId)), w = list.some(e => dryIds.has(e.placeId) && !rainIds.has(e.placeId));
+  return r && !w ? dry.rain.chip : w && !r ? dry.chip : `${dry.chip} / ${dry.rain.chip}`;
+}
+function rainCard(di, style = '') {
+  const d = C.days[di], dry = dryOf(di);
+  if (!dry.rain) return '';
+  return d.isRain
+    ? `<div class="card rain-card"${style ? ` style="${style}"` : ''}><p>☔ <b>비 오는 날 플랜</b>으로 보고 있어요. 바다가 괜찮으면 원래대로 돌리세요.</p><button class="small-btn" data-rain="0">🌤️ 원래 일정으로 (${esc(dry.chip || '')})</button></div>`
+    : `<div class="card rain-card"${style ? ` style="${style}"` : ''}><p>☔ 태풍·높은 파도로 바다가 취소되면 → <b>${esc(dry.rain.title)}</b></p><button class="small-btn" data-rain="1">☔ 비 오는 날 플랜으로 바꾸기</button></div>`;
+}
 function stopPlace(di = S.day, si = S.stop) { return place(stopPlaceId(di, si)); }
 const curStop = () => C.days[S.day].stops[S.stop];
+const stopName = (di = S.day, si = S.stop) => { const st = C.days[di].stops[si], p = stopPlace(di, si); return stopPlaceId(di, si) !== st.p ? p.nameKo : (st.label || p.nameKo); };
 const DOW = ['일', '월', '화', '수', '목', '금', '토'];
 function tripDate(di) { const v = store.get('start:' + C.id, null); if (!v) return null; const d = new Date(v + 'T12:00:00'); if (isNaN(d)) return null; d.setDate(d.getDate() + di); return d; }
 const fmtDate = d => `${d.getMonth() + 1}/${d.getDate()} (${DOW[d.getDay()]})`;
 const isoDate = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-function closedOn(p, d) { return !!(d && p && ((p.closed || []).includes(d.getDay()) || (p.closedDates || []).includes(isoDate(d)))); }
+function closedOn(p, d) { return !!(d && p && ((p.closed || []).includes(d.getDay()) || (p.closedDates || []).includes(isoDate(d)) || (p.onlyDates && !p.onlyDates.includes(isoDate(d))))); }
 const FLIGHT_DAYS = { tokyo: [1, 3, 5, 0] };
 const kindOf = st => KIND[st.k] || KIND['관광'];
 const catOf = p => CAT[p?.cat] || CAT.sight;
@@ -188,7 +223,20 @@ function clearZones() {
     const ids = [stopPlaceId(di, si), ...(st.alts || [])];
     for (const id of ids) { const p = place(id); if (p && p.lat != null && regionOf(p) === regionId) { const v = posOf(p, regionId); zones.push({ x: v.x, y: -v.z, r: 70 }); } }
   });
-  for (let di = 0; di < C.days.length; di++) for (let si = 1; si < C.days[di].stops.length; si++) for (const s of segmentsFor(di, si)) if (s.type === 'walk') for (let i = 0; i + 1 < s.pts.length; i++) zones.push({ seg: [s.pts[i].x, -s.pts[i].z, s.pts[i + 1].x, -s.pts[i + 1].z], r: 22 });
+  for (const d0 of C.daysDry || []) if (d0.rain) (C.days.includes(d0) ? rainDay(d0) : d0).stops.forEach(st => {
+    for (const id of [st.p, ...(st.alts || [])]) { const p = place(id); if (p && p.lat != null && regionOf(p) === regionId) { const v = posOf(p, regionId); zones.push({ x: v.x, y: -v.z, r: 70 }); } }
+  });
+  const walks = dis => {
+    for (const di of dis) for (let si = 1; si < C.days[di].stops.length; si++) for (const s of segmentsFor(di, si)) if (s.type === 'walk') for (let i = 0; i + 1 < s.pts.length; i++) zones.push({ seg: [s.pts[i].x, -s.pts[i].z, s.pts[i + 1].x, -s.pts[i + 1].z], r: 22 });
+  };
+  walks(C.days.keys());
+  // walk corridors of the switched-off plan version too, so toggling the rainy-day plan never routes through buildings
+  const rainDis = (C.daysDry || []).flatMap((d, di) => d.rain ? [di] : []);
+  if (rainDis.length) {
+    const active = C.days;
+    C.days = active.map((d, di) => rainDis.includes(di) ? (d.isRain ? d.dry : rainDay(d)) : d);
+    try { walks(rainDis); } finally { C.days = active; }
+  }
   return zones;
 }
 
@@ -228,7 +276,7 @@ function refreshMarkers() {
     const st = d.stops[si], p = stopPlace(S.day, si); if (!p || regionOf(p) !== regionId) continue;
     if (seen.has(p.id)) { seen.get(p.id).time += ' · ' + st.t; continue; }
     const K = kindOf(st), cur = si === S.stop;
-    const it = { pos: posOf(p, regionId), emoji: st.e || catOf(p).e, text: short(st.label || p.nameKo, 16), time: st.t, cls: cur ? 'cur' : '', big: cur, color: cur ? '#e0442f' : K.color, onClick: () => jumpTo(S.day, si) };
+    const it = { pos: posOf(p, regionId), emoji: st.e || catOf(p).e, text: short(stopName(S.day, si), 16), time: st.t, cls: cur ? 'cur' : '', big: cur, color: cur ? '#e0442f' : K.color, onClick: () => jumpTo(S.day, si) };
     seen.set(p.id, it); items.push(it);
   }
   const st = curStop();
@@ -268,9 +316,9 @@ async function showStop({ animateFrom = null } = {}) {
 }
 function startActivity() {
   const st = curStop(), p = stopPlace(), K = kindOf(st);
-  const act = st.act || K.act;
+  const act = (st.act || K.act) === 'dive' && p.cat === 'pool' ? 'pool' : st.act || K.act;
   const pos = posOf(p, regionId);
-  world.setOutfit(st.outfit || (act === 'dive' ? 'dive' : act === 'tennis' ? 'tennis' : 'casual'));
+  world.setOutfit(st.outfit || (act === 'dive' || act === 'pool' ? 'dive' : act === 'tennis' ? 'tennis' : 'casual'));
   world.activity(act, pos, { emoji: st.e || catOf(p).e, lines: st.lines || LINES_BY_ACT[act] || LINES_BY_ACT.sight, toast: st.toast, rot: st.courtRot, water: st.water ? proj(regionId, st.water[0], st.water[1]) : null });
   const d = world.members;
   d.forEach(m => m.acc.mug && (m.acc.mug.visible = act === 'drink' || (m.def.acc === 'mug' && m.outfit === 'casual')));
@@ -472,7 +520,7 @@ function renderHead() {
     <div class="stop-head">
       <div class="stop-emoji" aria-hidden="true">${st.e || catOf(p).e}</div>
       <div class="stop-meta"><span class="kind ${K.cls}">${esc(st.k)}</span>${indoorChip(p)}<span class="tnum">${st.t}</span><span>· ${S.stop + 1}/${C.days[S.day].stops.length}</span>${p.area ? `<span>· ${esc(p.area)}</span>` : ''}</div>
-      <h2 class="stop-name">${esc(st.label || p.nameKo)}</h2>
+      <h2 class="stop-name">${esc(stopName())}</h2>
     </div>
     ${st.leg ? `<div class="leg-line">${legSummary(st.leg)}</div>` : ''}`;
   const nav = $('#navBtn');
@@ -484,7 +532,7 @@ function renderActions(next = C.days[S.day].stops[S.stop + 1]) {
   const nb = $('#nextBtn');
   const last = S.stop >= C.days[S.day].stops.length - 1;
   nb.disabled = busy;
-  nb.textContent = busy ? '이동 중…' : last ? (S.day >= C.days.length - 1 ? '여행 마무리 ✈️' : `${S.day + 2}일차로 ▶`) : `다음: ${short(next?.label || place(next?.p)?.nameKo || '')} ▶`;
+  nb.textContent = busy ? '이동 중…' : last ? (S.day >= C.days.length - 1 ? '여행 마무리 ✈️' : `${S.day + 2}일차로 ▶`) : `다음: ${short(next ? stopName(S.day, S.stop + 1) : '')} ▶`;
   $('#prevBtn').disabled = busy || (S.day === 0 && S.stop === 0);
 }
 function renderBody(keepScroll = false) {
@@ -530,14 +578,17 @@ function placeCore(p) {
 }
 function hereHTML() {
   const st = curStop(), p = stopPlace(), prev = S.stop ? stopPlace(S.day, S.stop - 1) : null;
-  const steps = legSteps(st.leg, prev, p);
-  const alts = (st.alts || []).map(place).filter(Boolean);
   const mainId = stopPlaceId(S.day, S.stop), swapped = mainId !== st.p;
+  const leg = swapped && st.leg ? { ...st.leg, note: null, ...(st.leg.m === 'pickup' ? { m: 'taxi' } : {}) } : st.leg;
+  const steps = legSteps(leg, prev, p);
+  const alts = (st.alts || []).map(place).filter(Boolean);
   const allOpts = swapped ? [place(st.p), ...alts.filter(a => a.id !== mainId)] : alts;
   const dd = tripDate(S.day);
   const warnHTML = closedOn(p, dd) ? `<div class="sec card warn-card"><h4>⚠️ ${fmtDate(dd)}은 휴무일이에요</h4><p>아래 '근처 다른 선택지'에서 다른 집으로 바꾸세요.</p></div>` : '';
-  return `${warnHTML}
-    ${st.say ? `<div class="sec guide"><div class="face" aria-hidden="true">${guideDef().emoji}</div><div class="bubble"><b>${esc(guideDef().name)}</b> ${esc(fitN(st.say))}</div></div>` : ''}
+  const rainHTML = (!C.days[S.day].isRain && st.k === '다이빙') || (C.days[S.day].isRain && S.stop === 0) ? `<div class="sec">${rainCard(S.day)}</div>` : '';
+  return `${warnHTML}${rainHTML}
+    ${st.say && swapped ? `<p class="note sec">🔁 원래 추천(${esc(place(st.p)?.nameKo || '')}) 대신 고른 곳이에요. 이 곳 정보는 아래 카드를 보세요.</p>` : ''}
+    ${st.say && !swapped ? `<div class="sec guide"><div class="face" aria-hidden="true">${guideDef().emoji}</div><div class="bubble"><b>${esc(guideDef().name)}</b> ${esc(fitN(st.say))}</div></div>` : ''}
     ${steps.length ? `<div class="sec"><h3>🧭 여기까지 가는 법</h3><ol class="steps">${steps.map(s => `<li><span class="n">${s.i}</span><span class="t">${s.t}${s.s ? `<small>${esc(s.s)}</small>` : ''}</span></li>`).join('')}</ol></div>` : ''}
     ${journalStrip(p)}
     <div class="sec">${placeCore(p)}</div>
@@ -546,7 +597,7 @@ function hereHTML() {
 }
 function altRow(a, from) {
   const m = from ? dist(from, a) : 0;
-  return `<button class="alt" data-place="${a.id}"><span class="e">${catOf(a).e}</span><span><span class="nm">${esc(a.nameKo)}</span><span class="ds" style="display:block">${esc(indoorPre(a) + (a.desc || ''))}</span></span><span class="dist">${from ? `🚶 ${walkMin(m)}분` : ''}<br>${a.price ? priceText(a.price) : ''}</span></button>`;
+  return `<button class="alt" data-place="${a.id}"><span class="e">${catOf(a).e}</span><span><span class="nm">${esc(a.nameKo)}</span><span class="ds" style="display:block">${esc(indoorPre(a) + (a.desc || ''))}</span></span><span class="dist">${from ? (m > 2500 ? `🚃 ${(m / 1000).toFixed(1)}km` : `🚶 ${walkMin(m)}분`) : ''}<br>${a.price ? priceText(a.price) : ''}</span></button>`;
 }
 function placeHTML(id, withBack) {
   const p = place(id); if (!p) return '';
@@ -565,14 +616,14 @@ function planHTML() {
   const flightWarn = start && fd && (!fd.includes(tripDate(0).getDay()) || !fd.includes(tripDate(C.days.length - 1).getDay()))
     ? `<div class="card warn-card" style="margin-top:8px"><p>⚠️ 제주↔나리타 직항은 월·수·금·일만 있어요. 출발 ${fmtDate(tripDate(0))} / 귀국 ${fmtDate(tripDate(C.days.length - 1))} 조합은 직항 왕복이 안 돼요 (월→금, 수→일 추천).</p></div>` : '';
   const closedCount = d.stops.filter((st, si) => closedOn(stopPlace(S.day, si), dd)).length;
-  return `<div class="tripdate"><label for="tripStart">🗓️ 출발일</label><input type="date" id="tripStart" value="${start}"><span class="note">${start ? '요일별 휴무를 체크해 드려요' : '날짜를 넣으면 휴무일을 체크해 드려요'}</span></div>${flightWarn}
+  return `${rainCard(S.day, 'margin:0 0 10px')}<div class="tripdate"><label for="tripStart">🗓️ 출발일</label><input type="date" id="tripStart" value="${start}"><span class="note">${start ? '요일별 휴무를 체크해 드려요' : '날짜를 넣으면 휴무일을 체크해 드려요'}</span></div>${flightWarn}
     ${closedCount ? `<div class="card warn-card" style="margin-top:8px"><p>⚠️ 이날 휴무인 곳이 ${closedCount}곳 있어요. 빨간 표시를 눌러 대안으로 바꾸세요.</p></div>` : ''}
     <div class="day-hero" style="margin-top:12px"><span class="eyebrow">${S.day + 1}일차${dd ? ' · ' + fmtDate(dd) : ''}</span><h2>${esc(d.title)}</h2><p>${esc(d.sub || '')}</p>
     <div class="budget"><span>🍽️ 먹고 마시고 ${yen(b.food)}</span><span>🚃 교통 ${yen(b.move)}</span><span>💰 1인 약 ${won(b.total)}</span></div></div>
     <ol class="tl">${d.stops.map((st, si) => {
       const p = stopPlace(S.day, si), K = kindOf(st);
       return `<li class="${si < S.stop ? 'done' : ''}">${si && st.leg ? `<div class="mv">${legSummary(st.leg).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')}</div>` : ''}
-        <button data-jump="${si}" aria-current="${si === S.stop}"><span class="tm">${st.t}</span><span class="em">${st.e || catOf(p).e}</span><span><span class="nm">${esc(st.label || p.nameKo)}</span><span class="sb" style="display:block"><span class="kind ${K.cls}" style="height:18px;font-size:11px">${esc(st.k)}</span> ${indoorChip(p, 'height:18px;font-size:11px')} ${esc(p.area || '')}${closedOn(p, dd) ? ' <b class="closed-tag">휴무일!</b>' : (p.closed?.length ? ` · ${p.closed.map(x => DOW[x]).join('·')} 휴무` : '')}</span></span></button></li>`;
+        <button data-jump="${si}" aria-current="${si === S.stop}"><span class="tm">${st.t}</span><span class="em">${st.e || catOf(p).e}</span><span><span class="nm">${esc(stopName(S.day, si))}</span><span class="sb" style="display:block"><span class="kind ${K.cls}" style="height:18px;font-size:11px">${esc(st.k)}</span> ${indoorChip(p, 'height:18px;font-size:11px')} ${esc(p.area || '')}${closedOn(p, dd) ? ' <b class="closed-tag">휴무일!</b>' : (p.closed?.length ? ` · ${p.closed.map(x => DOW[x]).join('·')} 휴무` : '')}</span></span></button></li>`;
     }).join('')}</ol>
     ${d.note ? `<div class="sec card"><p>💡 ${esc(fitN(d.note))}</p></div>` : ''}`;
 }
@@ -648,9 +699,10 @@ function bindUI() {
     if ((b = q('[data-track-clear]'))) { if (b.dataset.sure) { JR.track = []; JR.lastPt = null; J.clearTrack().catch(() => {}); refreshTrack(); toast('발자취를 지웠어요'); renderBody(true); } else { b.dataset.sure = '1'; b.textContent = '정말 지울까요? 한 번 더'; } return; }
     if ((b = q('[data-place]'))) return openPlace(b.dataset.place);
     if ((b = q('[data-back]'))) { S.viewPlace = null; renderBody(); refreshMarkers(); world.setFollow(true); setFollowBtn(true); return; }
-    if (busy && q('[data-swap],[data-unswap],[data-hotelpin],[data-hotelreset]')) { toast('이동이 끝나면 바꿀 수 있어요'); return; }
-    if ((b = q('[data-swap]'))) { store.set(`swap:${C.id}:${S.day}:${S.stop}`, b.dataset.swap); S.viewPlace = null; toast('이 집으로 바꿨어요! 🔁'); showStop(); return; }
-    if ((b = q('[data-unswap]'))) { store.set(`swap:${C.id}:${S.day}:${S.stop}`, null); showStop(); return; }
+    if (busy && q('[data-swap],[data-unswap],[data-rain],[data-hotelpin],[data-hotelreset]')) { toast('이동이 끝나면 바꿀 수 있어요'); return; }
+    if ((b = q('[data-swap]'))) { store.set(swapKey(S.day, S.stop), b.dataset.swap); S.viewPlace = null; toast('이 집으로 바꿨어요! 🔁'); showStop(); return; }
+    if ((b = q('[data-unswap]'))) { store.set(swapKey(S.day, S.stop), null); showStop(); return; }
+    if ((b = q('[data-rain]'))) { setRain(S.day, b.dataset.rain === '1'); return; }
     if ((b = q('[data-filter]'))) { S.nearFilter = b.dataset.filter; renderBody(); return; }
     if ((b = q('[data-open]'))) { S.openNow = !S.openNow; renderBody(); return; }
     if ((b = q('[data-sethere]'))) { if (JR.picking) cancelPick(); setHereMode(true); return; }
@@ -807,7 +859,7 @@ function checkArrival() {
   if (!S.here?.gps || busy) return;
   const next = C.days[S.day].stops[S.stop + 1];
   if (!next) return hideArrive();
-  const np = stopPlace(S.day, S.stop + 1), key = `${C.id}:${S.day}:${S.stop + 1}`;
+  const np = stopPlace(S.day, S.stop + 1), key = `${C.id}:${S.day}:${S.stop + 1}:${np?.id}`;
   if (!np || np.lat == null) return;
   const cp = stopPlace(), dc = cp?.lat != null ? dist(S.here, cp) : Infinity;
   const d = dist(S.here, np), near = Math.max(90, Math.min(200, (S.here.acc || 30) + 60));
@@ -1168,7 +1220,7 @@ function albumHTML() {
   const groups = new Map();
   for (const e of mine) { const d = albumDay(e); if (!groups.has(d)) groups.set(d, []); groups.get(d).push(e); }
   return head + [...groups.entries()].sort((a, b) => a[0] - b[0]).map(([d, list]) => `<div class="sec album-day">
-    <div class="album-h"><h3>${d + 1}일차 · ${esc(C.days[d]?.chip || '')}</h3>${list.some(e => e.photo) ? `<button class="small-btn" data-share-day="${d}">${JR.prepared?.day === d ? shareLabel(JR.prepared) : '📤 이 날 사진 공유'}</button>` : ''}</div>
+    <div class="album-h"><h3>${d + 1}일차 · ${esc(albumChip(d, list))}</h3>${list.some(e => e.photo) ? `<button class="small-btn" data-share-day="${d}">${JR.prepared?.day === d ? shareLabel(JR.prepared) : '📤 이 날 사진 공유'}</button>` : ''}</div>
     <div class="album-grid">${list.map(albumItem).join('')}</div></div>`).join('');
 }
 
@@ -1494,11 +1546,13 @@ async function loadCity(id, fresh) {
   const mod = await CITY_LOADERS[id]();
   C = mod.default;
   for (const [pid, p] of Object.entries(C.places)) p.id = pid;
+  applyRain();
   applyHotel();
   S.city = id; store.set('city', id);
   regionId = null;
   const saved = store.get('pos', null);
   if (!fresh && saved && saved.city === id && C.days[saved.day]?.stops[saved.stop]) { S.day = saved.day; S.stop = saved.stop; }
+  else if (!fresh && saved && saved.city === id && C.days[saved.day]) { S.day = saved.day; S.stop = 0; }
   else { S.day = 0; S.stop = 0; }
   S.here = null; S.viewPlace = null; GPS.warnedOut = false; GPS.dismissed = null;
   if (GPS.fix) setTimeout(() => onGPS({ coords: { latitude: GPS.fix.lat, longitude: GPS.fix.lng, accuracy: GPS.fix.acc } }), 0);

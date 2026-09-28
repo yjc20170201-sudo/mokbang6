@@ -417,6 +417,11 @@ export class World {
     const every = (ms, fn) => { const id = setInterval(fn, ms); stops.push(() => clearInterval(id)); };
     const later = (ms, fn) => { const id = setTimeout(fn, ms); stops.push(() => clearTimeout(id)); };
     this._actStop = () => stops.forEach(f => f());
+    // activity-scoped tween: clearActivity() drops it, so an in-flight duck-dive never resumes on the next stop
+    const anim = (dur, fn) => new Promise(res => {
+      const a = { t: 0, update: dt => { a.t += dt; const k = Math.min(1, a.t / dur); fn(k); if (k >= 1) { this.animators.delete(a); res(); } } };
+      this.animators.add(a); stops.push(() => this.animators.delete(a));
+    });
     const lines = opts.lines || [];
     const talk = () => { if (lines.length) this.say(lines[Math.floor(Math.random() * lines.length)]); };
     const table = new THREE.Mesh(new THREE.CylinderGeometry(20, 20, 10, 20), toon('#8a5a3b')); table.position.copy(pos).setY(5);
@@ -461,19 +466,42 @@ export class World {
         const spot = opts.water || findWater(R, pos) || pos.clone();
         const buoy = makeBuoy(); buoy.position.copy(spot).setY(-2); this.activityGroup.add(buoy);
         const boat = makeBoat(); boat.position.copy(spot).add(V(90, -3, 30)); boat.rotation.y = 0.6; this.activityGroup.add(boat);
-        this.members.forEach((m, i) => { const a = i / 6 * Math.PI * 2; m.root.position.copy(spot).add(V(Math.sin(a) * 40, -6, Math.cos(a) * 40)); m.root.rotation.y = a + Math.PI; m.setMode('float'); });
+        this.members.forEach((m, i) => { const a = i / Math.max(1, this.members.length) * Math.PI * 2; m.root.position.copy(spot).add(V(Math.sin(a) * 40, -6, Math.cos(a) * 40)); m.root.rotation.y = a + Math.PI; m.setMode('float'); });
         let k = 0;
         const diveOne = async () => {
           const m = this.members[k++ % this.members.length]; const home = m.root.position.clone(); const depth = -(R.depth - 6);
           m.setMode('swim'); m.body.rotation.x = Math.PI; this.say('덕다이브~ 🤿', m, 1500);
-          const bubbles = setInterval(() => this.pop('🫧', m.root.position.clone().setY(-10), 1), 380);
-          await this.animate(2.2, t => { m.root.position.y = lerp(-6, depth, ease(t)); m.root.rotation.y += 0.004; });
+          const bubbles = setInterval(() => this.pop('🫧', m.root.position.clone().setY(-10), 1), 380); stops.push(() => clearInterval(bubbles));
+          await anim(2.2, t => { m.root.position.y = lerp(-6, depth, ease(t)); m.root.rotation.y += 0.004; });
           this.pop(['🐠', '🐟', '🐙', '🐢'][k % 4], m.root.position.clone().setY(-5), 1);
-          await this.animate(2.4, t => { m.root.position.y = lerp(depth, -6, ease(t)); });
+          await anim(2.4, t => { m.root.position.y = lerp(depth, -6, ease(t)); });
           clearInterval(bubbles); m.root.position.copy(home); m.setMode('float');
           this.say(['후~ 개운하다!', '시야 미쳤다', '물 좋네!!', '한 번 더?'][k % 4], m, 1800);
         };
         later(600, diveOne); every(5600, diveOne);
+        break;
+      }
+      case 'pool': { // indoor deep pool: a glass tank the crew duck-dives in, rain or shine
+        this.setOutfit('dive');
+        const W = 120, Dp = 76, H = 48, top = H - 5;
+        const tank = new THREE.Mesh(new THREE.BoxGeometry(W, H, Dp), toon('#4fb8dc', { transparent: true, opacity: 0.42 })); tank.position.copy(pos).setY(H / 2); this.activityGroup.add(tank);
+        const floor = new THREE.Mesh(new THREE.BoxGeometry(W, 2, Dp), toon('#1f6f9a')); floor.position.copy(pos).setY(1); this.activityGroup.add(floor);
+        for (const [x, z, w, d] of [[0, Dp / 2, W + 8, 5], [0, -Dp / 2, W + 8, 5], [W / 2, 0, 5, Dp], [-W / 2, 0, 5, Dp]]) {
+          const rim = new THREE.Mesh(new THREE.BoxGeometry(w, 5, d), toon('#eef3f6')); rim.position.copy(pos).add(V(x, H + 1, z)); this.activityGroup.add(rim);
+        }
+        const buoy = makeBuoy(); buoy.position.copy(pos).setY(top + 2); this.activityGroup.add(buoy);
+        this.members.forEach((m, i) => { const a = i / Math.max(1, this.members.length) * Math.PI * 2; m.root.position.copy(pos).add(V(Math.sin(a) * 38, top, Math.cos(a) * 24)); m.root.rotation.y = a + Math.PI; m.setMode('float'); });
+        let k = 0;
+        const diveOne = async () => {
+          const m = this.members[k++ % this.members.length]; const home = m.root.position.clone();
+          m.setMode('swim'); m.body.rotation.x = Math.PI; this.say(['덕다이브~ 🤿', '바닥 찍고 올게!', '이퀄 한 번 더'][k % 3], m, 1500);
+          const bubbles = setInterval(() => this.pop('🫧', m.root.position.clone().setY(top), 1), 380); stops.push(() => clearInterval(bubbles));
+          await anim(2.0, t => { m.root.position.y = lerp(top, 6, ease(t)); });
+          await anim(2.0, t => { m.root.position.y = lerp(6, top, ease(t)); });
+          clearInterval(bubbles); m.root.position.copy(home); m.setMode('float');
+          this.say(['후~ 개운하다!', '물 따뜻하다~', '버디 체크 OK', '스태틱 누가 오래 버텨?'][k % 4], m, 1800);
+        };
+        later(600, diveOne); every(5200, diveOne);
         break;
       }
       case 'onsen': {
