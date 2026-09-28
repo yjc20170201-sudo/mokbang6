@@ -257,6 +257,7 @@ async function showStop({ animateFrom = null } = {}) {
   const st = curStop(), p = stopPlace();
   const rid = regionOf(p);
   if (rid !== regionId) { try { await ensureRegion(rid); } catch { renderAll(); return false; } }
+  if (st !== curStop() || !C.regions[rid]) return false; // a newer stop or city took over while the region loaded
   world.setTime(st.t);
   refreshMarkers(); refreshRoute();
   const pos = posOf(p, rid);
