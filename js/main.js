@@ -97,11 +97,12 @@ function stopPlace(di = S.day, si = S.stop) { return place(stopPlaceId(di, si));
 const curStop = () => C.days[S.day].stops[S.stop];
 const stopName = (di = S.day, si = S.stop) => { const st = C.days[di].stops[si], p = stopPlace(di, si); return stopPlaceId(di, si) !== st.p ? p.nameKo : (st.label || p.nameKo); };
 const DOW = ['일', '월', '화', '수', '목', '금', '토'];
-function tripDate(di) { const v = store.get('start:' + C.id, null); if (!v) return null; const d = new Date(v + 'T12:00:00'); if (isNaN(d)) return null; d.setDate(d.getDate() + di); return d; }
+const startDate = () => store.get('start:' + C.id, C.defaultStart || null); // the crew's planned date until someone edits it
+function tripDate(di) { const v = startDate(); if (!v) return null; const d = new Date(v + 'T12:00:00'); if (isNaN(d)) return null; d.setDate(d.getDate() + di); return d; }
 const fmtDate = d => `${d.getMonth() + 1}/${d.getDate()} (${DOW[d.getDay()]})`;
 const isoDate = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function closedOn(p, d) { return !!(d && p && ((p.closed || []).includes(d.getDay()) || (p.closedDates || []).includes(isoDate(d)) || (p.onlyDates && !p.onlyDates.includes(isoDate(d))))); }
-const FLIGHT_DAYS = { tokyo: [1, 3, 5, 0] };
+const FLIGHT_DAYS = { tokyo: [1, 3, 4, 5, 0] }; // winter 2026/27 (from 10/25): Mon/Wed/Thu/Fri/Sun
 const kindOf = st => KIND[st.k] || KIND['관광'];
 const catOf = p => CAT[p?.cat] || CAT.sight;
 function jpNow() {
@@ -665,10 +666,10 @@ function placeHTML(id, withBack) {
 }
 function planHTML() {
   const d = C.days[S.day], b = dayBudget(S.day);
-  const start = store.get('start:' + C.id, ''), dd = tripDate(S.day);
+  const start = startDate() || '', dd = tripDate(S.day);
   const fd = FLIGHT_DAYS[C.id];
   const flightWarn = start && fd && (!fd.includes(tripDate(0).getDay()) || !fd.includes(tripDate(C.days.length - 1).getDay()))
-    ? `<div class="card warn-card" style="margin-top:8px"><p>⚠️ 제주↔나리타 직항은 월·수·금·일만 있어요. 출발 ${fmtDate(tripDate(0))} / 귀국 ${fmtDate(tripDate(C.days.length - 1))} 조합은 직항 왕복이 안 돼요 (월→금, 수→일 추천).</p></div>` : '';
+    ? `<div class="card warn-card" style="margin-top:8px"><p>⚠️ 제주↔나리타 직항은 겨울에 월·수·목·금·일만 있어요. 출발 ${fmtDate(tripDate(0))} / 귀국 ${fmtDate(tripDate(C.days.length - 1))} 조합은 직항 왕복이 안 돼요 (월→금, 수→일, 목→월, 일→목).</p></div>` : '';
   const closedCount = d.stops.filter((st, si) => closedOn(stopPlace(S.day, si), dd)).length;
   return `${rainCard(S.day, 'margin:0 0 10px')}<div class="tripdate"><label for="tripStart">🗓️ 출발일</label><input type="date" id="tripStart" value="${start}"><span class="note">${start ? '요일별 휴무를 체크해 드려요' : '날짜를 넣으면 휴무일을 체크해 드려요'}</span></div>${flightWarn}
     ${closedCount ? `<div class="card warn-card" style="margin-top:8px"><p>⚠️ 이날 휴무인 곳이 ${closedCount}곳 있어요. 빨간 표시를 눌러 대안으로 바꾸세요.</p></div>` : ''}
@@ -706,6 +707,8 @@ function tipsHTML() {
   const checks = store.get('checks', {});
   return [
     installHTML(),
+    T.calendar?.length ? sec('📅 예약 달력 (11/9 출발 기준)', ul(T.calendar)) : '',
+    T.season?.length ? sec('🍂 11월 도쿄 날씨·계절', ul(T.season)) : '',
     T.flight ? sec('✈️ 항공편', `<div class="card"><h4>${esc(T.flight.title)}</h4><ul>${T.flight.items.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`) : '',
     sec('💰 총무 계산기', `<div class="card calc"><label for="calcYen">총액 (엔)<input id="calcYen" inputmode="numeric" value="${store.get('calcYen', 18000)}"></label><label for="calcN">인원<input id="calcN" inputmode="numeric" value="${N()}"></label><label for="calcRate">100엔 = 원<input id="calcRate" inputmode="decimal" value="${(krwRate() * 100).toFixed(1)}"></label><span></span><output id="calcOut"></output></div>`),
     T.transit ? sec('🚃 교통카드 · 패스', ul(T.transit)) : '',
@@ -1595,7 +1598,7 @@ function openIntro(first = false) {
 }
 const CITY_META = {
   osaka: { emoji: '🐙', name: '오사카', points: ['제주 직항 매일 (16:05→17:55)', '테니스 두 번 (실내 코트)', '쿠시카츠·오코노미야키·고베규', '실제 여행 약 3.5일'] },
-  tokyo: { emoji: '🗼', name: '도쿄', points: ['대한항공 직항 주 4회 (월·수·금·일)', '테니스 두 번 (새벽 하드·실내 코트)', '츠키지·몬자·골든가이', '규모 크고 이동 많음'] },
+  tokyo: { emoji: '🗼', name: '도쿄', points: ['11/9(월)~13(금) 확정 · 대한항공 직항', '테니스 두 번 (시오미 하드·모리시타 옴니)', '츠키지·몬자·골든가이', '규모 크고 이동 많음'] },
 };
 
 async function loadCity(id, fresh) {
