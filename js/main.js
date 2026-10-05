@@ -708,7 +708,7 @@ function tipsHTML() {
   return [
     installHTML(),
     T.calendar?.length ? sec('📅 예약 달력 (11/9 출발 기준)', ul(T.calendar)) : '',
-    T.season?.length ? sec('🍂 11월 도쿄 날씨·계절', ul(T.season)) : '',
+    T.season?.length ? sec(T.seasonTitle || '🍂 11월 날씨·계절', ul(T.season)) : '',
     T.flight ? sec('✈️ 항공편', `<div class="card"><h4>${esc(T.flight.title)}</h4><ul>${T.flight.items.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`) : '',
     sec('💰 총무 계산기', `<div class="card calc"><label for="calcYen">총액 (엔)<input id="calcYen" inputmode="numeric" value="${store.get('calcYen', 18000)}"></label><label for="calcN">인원<input id="calcN" inputmode="numeric" value="${N()}"></label><label for="calcRate">100엔 = 원<input id="calcRate" inputmode="decimal" value="${(krwRate() * 100).toFixed(1)}"></label><span></span><output id="calcOut"></output></div>`),
     T.transit ? sec('🚃 교통카드 · 패스', ul(T.transit)) : '',
@@ -1597,8 +1597,8 @@ function openIntro(first = false) {
   };
 }
 const CITY_META = {
-  osaka: { emoji: '🐙', name: '오사카', points: ['제주 직항 매일 (16:05→17:55)', '테니스 두 번 (실내 코트)', '쿠시카츠·오코노미야키·고베규', '실제 여행 약 3.5일'] },
-  tokyo: { emoji: '🗼', name: '도쿄', points: ['11/9(월)~13(금) 확정 · 대한항공 직항', '테니스 두 번 (시오미 하드·모리시타 옴니)', '츠키지·몬자·골든가이', '규모 크고 이동 많음'] },
+  osaka: { emoji: '🐙', name: '오사카', points: ['11/9(월)~13(금) 예정 · 제주 직항 매일', '테니스 두 번 (실내 코트)', '쿠시카츠·오코노미야키·고베규', '실제 여행 약 3.5일'] },
+  tokyo: { emoji: '🗼', name: '도쿄', points: ['대한항공 직항 (겨울 주 5회)', '테니스 두 번 (시오미 하드·모리시타 옴니)', '츠키지·몬자·골든가이', '규모 크고 이동 많음'] },
 };
 
 async function loadCity(id, fresh) {
