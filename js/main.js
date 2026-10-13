@@ -135,9 +135,19 @@ function realViewLinks(p) {
 function toast(msg, ms = 2400) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), ms); }
 function loadCrew() { // [{ c: character index, name }], 2–8 people
   const v2 = store.get('crew2', null);
-  if (Array.isArray(v2) && v2.length >= 2) return v2.filter(m => CREW_DEFAULT[m?.c]).slice(0, 8);
+  if (Array.isArray(v2) && v2.length >= 2) {
+    const crew = v2.filter(m => CREW_DEFAULT[m?.c]).slice(0, 8);
+    // the trip went final with six (2026-10-14): a crew saved while the default was five gets the sixth member, once
+    if (crew.length === 5 && !store.get('crew6', false)) {
+      const c = CREW_DEFAULT.findIndex((_, i) => !crew.some(m => m.c === i));
+      if (c >= 0) { crew.push({ c, name: '' }); store.set('crew2', crew); }
+    }
+    store.set('crew6', true);
+    return crew;
+  }
   const old = store.get('crew', null); // first version: six names in fixed order
-  return CREW_DEFAULT.slice(0, Array.isArray(old) ? 6 : 5).map((d, i) => ({ c: i, name: (Array.isArray(old) && typeof old[i] === 'string' && old[i]) || '' }));
+  store.set('crew6', true);
+  return CREW_DEFAULT.slice(0, 6).map((d, i) => ({ c: i, name: (Array.isArray(old) && typeof old[i] === 'string' && old[i]) || '' }));
 }
 function crewDefs() { return S.crew.map(m => ({ ...CREW_DEFAULT[m.c], name: m.name || CREW_DEFAULT[m.c].role, idx: m.c })); }
 const N = () => S.crew.length;
@@ -1587,7 +1597,7 @@ function openIntro(first = false) {
   el.dataset.pick = S.city || 'osaka';
   el.querySelector(`[data-city="${el.dataset.pick}"]`).setAttribute('aria-pressed', 'true');
   el.querySelector('#introGo').onclick = async () => {
-    readCrew(); S.crew = draft.map(x => ({ c: x.c, name: x.name.trim() })); store.set('crew2', S.crew);
+    readCrew(); S.crew = draft.map(x => ({ c: x.c, name: x.name.trim() })); store.set('crew2', S.crew); store.set('crew6', true);
     if (!S.crew.some(x => x.c === JR.who)) { JR.who = S.crew[0].c; store.set('who', JR.who); }
     el.hidden = true;
     const pick = el.dataset.pick;
@@ -1597,7 +1607,7 @@ function openIntro(first = false) {
   };
 }
 const CITY_META = {
-  osaka: { emoji: '🐙', name: '오사카', points: ['11/9(월)~13(금) 예정 · 제주 직항 매일', '테니스 두 번 (실내 코트)', '쿠시카츠·오코노미야키·고베규', '실제 여행 약 3.5일'] },
+  osaka: { emoji: '🐙', name: '오사카', points: ['11/9(월)~13(금) 확정 · 6명 · 제주 직항', '테니스 두 번 (실내 코트)', '쿠시카츠·오코노미야키·고베규', '실제 여행 약 3.5일'] },
   tokyo: { emoji: '🗼', name: '도쿄', points: ['대한항공 직항 (겨울 주 5회)', '테니스 두 번 (시오미 하드·모리시타 옴니)', '츠키지·몬자·골든가이', '규모 크고 이동 많음'] },
 };
 
