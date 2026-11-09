@@ -237,6 +237,7 @@ button{font:inherit;color:inherit}
 .toast{position:absolute;left:50%;top:calc(env(safe-area-inset-top,0px) + 104px);transform:translateX(-50%);z-index:30;background:var(--ink);color:var(--panel);padding:10px 16px;border-radius:14px;font-weight:600;font-size:13.5px;box-shadow:var(--shadow);max-width:calc(100% - 40px);text-align:center;pointer-events:none;opacity:0;transition:opacity .2s}
 .toast.show{opacity:1}
 .loading{position:absolute;inset:0;z-index:25;display:grid;place-items:center;background:var(--bg);font-family:var(--f-display);font-size:20px;color:var(--ink-2)}
+.overlay[data-mode="install"]{z-index:30} /* above the loading screen: read the install steps while the map loads */
 .loading .spin{display:block;font-size:42px;text-align:center;animation:bob 1s ease-in-out infinite}
 @keyframes bob{50%{transform:translateY(-8px)}}
 

@@ -5,6 +5,7 @@ import { CREW_DEFAULT } from './chars.js';
 import { CAT, KIND, LINES_BY_ACT, phrasesFor, CHECKLIST, groupTips, splitText } from './data/common.js';
 import * as J from './journal.js';
 import { ShareClient, makeInvite, openInvite, REPO } from './share.js';
+import { installGuide } from './install.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -782,7 +783,7 @@ function bindUI() {
     if ((b = q('[data-clearhere]'))) { if (S.here?.gps) stopGPS(); S.here = null; refreshMarkers(); renderBody(); return; }
     if ((b = q('[data-gps]'))) { startGPS(); return; }
     if ((b = q('[data-gpsoff]'))) { stopGPS(); toast('GPS를 껐어요'); return; }
-    if ((b = q('[data-install]'))) { const ev = installEvt; installEvt = null; ev?.prompt(); ev?.userChoice?.finally(() => renderBody()); return; }
+    if (onInstallClick(q)) return;
     if ((b = q('[data-hotelpin]'))) { if (JR.picking) cancelPick(); S.pinHotel = true; setHereMode(true); toast('지도에서 숙소 위치를 탭하세요 🏨'); return; }
     if ((b = q('[data-hotelreset]'))) { store.set('hotel:' + C.id, null); const p = C.places[hotelId()]; if (p?._orig) Object.assign(p, p._orig); toast('예시 위치로 되돌렸어요'); showStop(); return; }
     if ((b = q('[data-copy]'))) { const p = phrasesFor(N())[+b.dataset.copy]; navigator.clipboard?.writeText(p.jp).then(() => toast('복사했어요 📋'), () => toast(p.jp)); return; }
@@ -1221,6 +1222,7 @@ async function onJournalClick(e) {
   const el = $('#jModal'), q = s => e.target.closest(s);
   let b;
   if (await onShareClick(q)) return;
+  if (onInstallClick(q)) return;
   if (e.target === el && el.dataset.mode !== 'edit') return closeJModal();
   if (q('[data-jclose]')) return closeJModal();
   if ((b = q('[data-jcancel]'))) {
@@ -1436,8 +1438,9 @@ function openShareCreate() {
     <div class="j-actions"><button class="btn" data-jclose="1">취소</button><button class="btn primary" data-share-save="1">만들기</button></div>`);
 }
 function openShareJoin(code = '') {
-  const ua = navigator.userAgent, inApp = /KAKAOTALK|NAVER|Instagram|FBAN|FBAV|Line\//i.test(ua), iosBrowser = /iPhone|iPad|iPod/i.test(ua) && !isStandalone();
-  const where = inApp || iosBrowser ? `<div class="card warn-soft" style="margin-top:8px"><p>${inApp ? '카톡·네이버 안 브라우저예요. 여기서 들어가면 이 창에서만 공유돼요.' : '사파리에서 열었어요.'} 홈 화면에 설치한 앱에서 쓰려면: <b>링크 복사 → 설치한 앱 열기 → 📸 앨범 → 🔑 초대받았어요 → 붙여넣기</b></p>${code ? `<button class="small-btn" style="margin-top:6px" data-share-copy="${esc(inviteURL(code))}">📋 초대 링크 복사</button>` : ''}</div>` : '';
+  const g = guide(), inApp = g.key === 'kakao' || g.key === 'inapp', iosBrowser = !inApp && /^ios/.test(g.key) && !isStandalone();
+  const where = inApp || iosBrowser ? `<div class="card warn-soft" style="margin-top:8px"><p>${inApp ? `${esc(g.title)}. 여기서 들어가면 이 창에서만 공유돼요.` : '브라우저에서 열었어요. 아이폰은 브라우저와 설치한 앱이 따로예요.'} 홈 화면에 설치한 앱에서 쓰려면: <b>앱 설치 → 초대 링크 복사 → 설치한 앱 열기 → 📸 앨범 → 🔑 초대받았어요 → 붙여넣기</b></p>
+    <div class="links" style="margin-top:6px">${inApp && g.escape ? `<a class="small-btn" href="${esc(g.escape.href)}">${esc(g.escape.label)}</a>` : `<button class="small-btn" data-install-guide="1">📲 설치 방법</button>`}${code ? `<button class="small-btn" data-share-copy="${esc(inviteURL(code))}">📋 초대 링크 복사</button>` : ''}</div></div>` : '';
   shareModal(`<h2 class="j-title">🔑 공유 앨범 들어가기</h2>
     <p class="note">방장이 카톡으로 보낸 초대 링크로 열었다면 암호만 넣으면 돼요.${SH.client ? ' (지금 연결을 새 초대로 바꿔요)' : ''}</p>${where}
     <label class="j-label" for="shCode">초대 코드</label><textarea class="j-input" id="shCode" rows="2" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="초대 링크나 코드 붙여넣기">${esc(code)}</textarea>
@@ -1482,7 +1485,7 @@ async function onShareClick(q) {
     return true;
   }
   if (q('[data-share-joingo]')) {
-    let code = $('#shCode').value.trim(); const m = code.match(/#join=([\w-]+)/); if (m) code = m[1];
+    let code = $('#shCode').value.trim(); const m = code.match(/[#?&]join=([\w-]+)/); if (m) code = m[1];
     const pass = $('#shJoinPass').value;
     let token;
     try { token = await openInvite(code, pass); } catch { toast('암호나 초대 코드가 달라요 — 다시 확인해 주세요', 3500); return true; }
@@ -1490,7 +1493,7 @@ async function onShareClick(q) {
     const c = new ShareClient(token);
     try { await c.check(); } catch (err) { toast(err.status === 401 || err.status === 404 ? '초대 링크가 만료됐어요 — 방장에게 새 링크를 받아 주세요' : '확인 실패 — 인터넷 연결을 확인해 주세요', 4000); return true; }
     SH.client = c; store.set('share', { token }); SH.err = null; SH.pauseUntil = 0;
-    if (/join=/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search);
+    if (/join=/.test(location.hash + location.search)) history.replaceState(null, '', location.pathname); // invites arrive as #join= or, via Chrome intents, ?join=
     closeJModal(); toast('👥 공유 앨범에 들어왔어요! 사진을 받는 중…', 3000);
     S.tab = 'album'; renderBody(); if (S.sheet === 'peek') setSheet('half');
     syncShare({ quiet: false });
@@ -1513,8 +1516,8 @@ async function onShareClick(q) {
 
 // ---------- install as an app (GitHub Pages build only) ----------
 let installEvt = null;
-window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (S.tab === 'tips' && C) renderBody(); });
-window.addEventListener('appinstalled', () => { installEvt = null; toast('📲 설치 완료! 홈 화면에서 여세요'); });
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (S.tab === 'tips' && C) renderBody(); if ($('#jModal').dataset.mode === 'install') openInstallGuide(); });
+window.addEventListener('appinstalled', () => { installEvt = null; if ($('#jModal').dataset.mode === 'install') closeJModal(); toast('📲 설치 완료! 홈 화면의 먹방원정대 아이콘으로 여세요', 4000); });
 const isPWA = () => !!document.querySelector('link[rel="manifest"]');
 let offlineOK = false;
 async function checkOffline() {
@@ -1539,12 +1542,37 @@ function installHTML() {
   if (isStandalone()) return offlineOK
     ? `<div class="sec card"><h4>✅ 앱으로 실행 중</h4><p>오프라인에서도 지도·일정이 떠요. 위치는 📍 버튼으로 켜세요.</p></div>`
     : `<div class="sec card"><h4>⏳ 오프라인 준비 중</h4><p>와이파이에서 1분쯤 켜 두세요. 준비되면 여기가 ✅로 바뀌어요.</p></div>`;
-  const ua = navigator.userAgent, ios = /iPhone|iPad|iPod/i.test(ua), inApp = /KAKAOTALK|NAVER|Instagram|FBAN|FBAV|Line\//i.test(ua);
-  const how = installEvt ? `<p>버튼 한 번이면 홈 화면에 아이콘이 생겨요.</p><button class="btn primary" style="margin-top:10px;width:100%" data-install="1">📲 설치하기</button>`
-    : inApp ? `<p>카톡·네이버 안에서는 설치가 안 돼요. 오른쪽 아래(또는 위) <b>⋯ 메뉴 → 다른 브라우저로 열기</b>를 누른 뒤 설치하세요.</p>`
-    : ios ? `<p>사파리 아래쪽 <b>공유 버튼(□↑)</b> → <b>홈 화면에 추가</b>를 누르세요. 설치한 앱은 와이파이에서 한 번 열어 두세요. 이름표·숙소 설정과 사진 기록은 앱으로 옮겨지지 않으니 여행 전에 설치하세요.</p>`
-    : `<p>크롬 오른쪽 위 <b>⋮ 메뉴 → 앱 설치</b> (또는 홈 화면에 추가)를 누르세요.</p>`;
-  return `<div class="sec card install"><h4>📲 폰에 앱으로 설치</h4>${how}<p class="note" style="margin-top:6px">설치하면 전체화면·오프라인·GPS가 다 돼요.</p></div>`;
+  return `<div class="sec card install"><h4>📲 폰에 앱으로 설치</h4>${guideHTML(guide())}<p class="note" style="margin-top:6px">설치하면 전체화면·오프라인·GPS가 다 돼요.</p></div>`;
+}
+const guide = () => installGuide(navigator.userAgent, { touch: navigator.maxTouchPoints || 0, prompt: !!installEvt, url: location.href });
+function guideHTML(g) {
+  return `<p><b>${esc(g.title)}</b></p>
+    ${g.escape ? `<a class="btn primary" style="margin-top:10px;width:100%" href="${esc(g.escape.href)}">${esc(g.escape.label)}</a>` : ''}
+    ${g.key === 'prompt' ? '<button class="btn primary" style="margin-top:10px;width:100%" data-install="1">📲 설치하기</button>' : ''}
+    <ol class="mini-steps">${g.steps.map(s => `<li>${s}</li>`).join('')}</ol>
+    ${g.note ? `<p class="note" style="margin-top:8px">${g.note}</p>` : ''}
+    ${g.key === 'prompt' || g.key === 'desktop' ? '' : `<div class="links" style="margin-top:10px"><button class="small-btn" data-install-copy="1">📋 링크 복사</button></div>`}`;
+}
+function openInstallGuide() {
+  const el = $('#jModal'); closeJModal();
+  el.innerHTML = `<div class="modal jinstall" role="dialog" aria-label="앱 설치">
+    <h2 class="j-title">📲 먼저 앱으로 설치해요</h2>
+    <p class="note">홈 화면에 설치하면 전체화면·오프라인 지도·GPS·공유 앨범이 다 돼요.</p>
+    <div class="card" style="margin-top:12px">${guideHTML(guide())}</div>
+    <div class="j-actions"><button class="btn" data-install-later="1">그냥 브라우저로 볼게요</button></div></div>`;
+  el.hidden = false; el.dataset.mode = 'install';
+}
+function maybeInstallGuide() { // once a day in a plain browser tab, unless an invite is being opened
+  if (!isPWA() || isStandalone() || /join=/.test(location.hash + location.search) || guide().key === 'desktop') return;
+  if (Date.now() - (store.get('installLater', 0) || 0) < 864e5) return;
+  openInstallGuide();
+}
+function onInstallClick(q) {
+  if (q('[data-install]')) { const ev = installEvt; installEvt = null; ev?.prompt(); ev?.userChoice?.finally(() => { if ($('#jModal').dataset.mode === 'install') closeJModal(); renderBody(); }); return true; }
+  if (q('[data-install-guide]')) { openInstallGuide(); return true; }
+  if (q('[data-install-later]')) { store.set('installLater', Date.now()); closeJModal(); return true; }
+  if (q('[data-install-copy]')) { navigator.clipboard?.writeText(location.href).then(() => toast('복사했어요 📋 브라우저 주소창에 붙여넣으세요', 3000), () => toast('주소창의 링크를 길게 눌러 복사해 주세요', 3000)); return true; }
+  return false;
 }
 
 // ---------- our own hotel ----------
@@ -1645,11 +1673,12 @@ async function loadCity(id, fresh) {
   window.__trip = { world, S, get C() { return C; }, jump: (d, s) => jumpTo(d, s), next: () => go(1), city: id => loadCity(id, false) };
   world.setCrew(crewDefs());
   bindUI();
+  maybeInstallGuide();
   if ('serviceWorker' in navigator && isPWA()) setupSW();
   journalInit().then(() => {
     if (!shareAllowed()) return;
     const checkJoin = () => { // invite links: #join=<code>
-      const m = location.hash.match(/join=([\w-]+)/); if (!m) return;
+      const m = (location.hash + '&' + location.search).match(/join=([\w-]+)/); if (!m) return;
       openShareJoin(m[1]);
     };
     checkJoin(); window.addEventListener('hashchange', checkJoin);
