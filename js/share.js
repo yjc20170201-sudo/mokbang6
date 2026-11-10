@@ -1,7 +1,10 @@
 // Shared trip album stored in a private GitHub repo.
 // The group leader creates a fine-grained token that can only read/write that one repo and pastes it into
-// the app once; the app turns it into an invite code encrypted with a group passcode (PBKDF2 + AES-GCM).
-// Friends open the invite link, type the passcode, and their phones sync photos through the GitHub API.
+// the app once; the app turns it into an invite code. Friends open the invite link and their phones sync photos
+// through the GitHub API. Invite codes, by their first byte:
+//   1 — the token locked with a group passcode (PBKDF2 + AES-GCM); the passcode travels separately (older links)
+//   2 — one-tap: the token locked with a random key carried in the code itself, so the link alone opens the album.
+//       It keeps the token out of plain sight; anyone holding the link is in, so it belongs in the group chat only.
 export const REPO = { owner: 'yjc20170201-sudo', name: 'mokbang6-photos', branch: 'main' };
 let API = 'https://api.github.com';
 try { const o = localStorage.getItem('mokbang6:shareApi'); if (o && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) API = JSON.parse(o); } catch { /* default API */ }
@@ -20,10 +23,19 @@ export async function makeInvite(token, pass) {
   const out = new Uint8Array(1 + 16 + 12 + ct.length); out[0] = 1; out.set(salt, 1); out.set(iv, 17); out.set(ct, 29);
   return b64u(out);
 }
-export async function openInvite(code, pass) { // throws when the passcode is wrong
+export async function makeOpenInvite(token) {
+  const k = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await crypto.subtle.importKey('raw', k, 'AES-GCM', false, ['encrypt']);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, te.encode(token)));
+  const out = new Uint8Array(1 + 16 + 12 + ct.length); out[0] = 2; out.set(k, 1); out.set(iv, 17); out.set(ct, 29);
+  return b64u(out);
+}
+export function inviteNeedsPass(code) { try { return unb64u(code.trim())[0] !== 2; } catch { return true; } }
+export async function openInvite(code, pass = '') { // throws when the code is cut off or (for a passcode invite) the passcode is wrong
   const raw = unb64u(code.trim());
-  if (raw[0] !== 1 || raw.length < 40) throw new Error('bad-code');
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: raw.slice(17, 29) }, await keyFrom(pass, raw.slice(1, 17)), raw.slice(29));
+  if ((raw[0] !== 1 && raw[0] !== 2) || raw.length < 40) throw new Error('bad-code');
+  const key = raw[0] === 2 ? await crypto.subtle.importKey('raw', raw.slice(1, 17), 'AES-GCM', false, ['decrypt']) : await keyFrom(pass, raw.slice(1, 17));
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: raw.slice(17, 29) }, key, raw.slice(29));
   return td.decode(pt);
 }
 
@@ -32,11 +44,21 @@ export class ShareClient {
   constructor(token) { this.token = token; }
   async req(path, { method = 'GET', body = null, raw = false, okStatus = [] } = {}) {
     for (let attempt = 0; ; attempt++) {
-      const res = await fetch(API + path, {
-        method, cache: 'no-store',
-        headers: { Authorization: 'Bearer ' + this.token, Accept: raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(body ? { 'Content-Type': 'application/json' } : {}) },
-        body: body ? JSON.stringify(body) : null,
-      });
+      // a stalled phone connection would otherwise leave the sync "running" forever, so every call gets a deadline
+      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), body ? 90000 : 30000);
+      let res;
+      try {
+        res = await fetch(API + path, {
+          method, cache: 'no-store', signal: ctl.signal,
+          headers: { Authorization: 'Bearer ' + this.token, Accept: raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+          body: body ? JSON.stringify(body) : null,
+        });
+        const buf = res.status === 204 ? null : await res.arrayBuffer(); // the body download counts toward the deadline too
+        res = new Response(buf, { status: res.status, statusText: res.statusText, headers: res.headers });
+      } catch (e) {
+        if (ctl.signal.aborted) { const err = new Error('github timeout'); err.timeout = true; throw err; }
+        throw e;
+      } finally { clearTimeout(timer); }
       if (res.ok || okStatus.includes(res.status)) return res;
       if (res.status === 403 || res.status === 429) { // GitHub rate limits look like 403s: back off instead of calling it a permission problem
         const ra = +res.headers.get('retry-after') || 0, rem = res.headers.get('x-ratelimit-remaining'), reset = +res.headers.get('x-ratelimit-reset') || 0;
