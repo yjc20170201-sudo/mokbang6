@@ -1332,25 +1332,9 @@ async function syncShare({ quiet = true } = {}) {
   SH.syncing = true; SH.syncAt = Date.now(); SH.err = null; shareRefresh();
   let changed = false, sent = 0, got = 0;
   try {
-    // 1) upload my new/edited records (photos first, the record last, so friends never see a record without its photo)
-    for (const e of JR.entries.filter(x => !x.remote && x.sync !== 'done')) {
-      if (!alive()) return;
-      if (e.photo && (e.sync == null || e.sync === 'new')) { // records made before sharing have no sync state yet
-        const thumb = await J.getBlob(e.id, 'thumb').catch(() => null), full = await J.getBlob(e.id, 'full').catch(() => null);
-        if (thumb) await client.put(`t/${e.id}.jpg`, thumb, { message: 'thumb ' + e.id });
-        if (full) await client.put(`p/${e.id}.jpg`, full, { message: 'photo ' + e.id });
-      }
-      if (!JR.entries.includes(e)) continue; // deleted while its photo uploaded; the tombstone cleans up
-      const body = JSON.stringify(metaOf(e));
-      e.rsha = await client.put(`e/${e.id}.json`, body, { sha: e.rsha || null, message: 'record ' + e.id });
-      if (!JR.entries.includes(e)) continue;
-      e.sync = JSON.stringify(metaOf(e)) === body ? 'done' : 'dirty'; // edited during the upload → send again
-      if (e.sync === 'dirty') SH.again = true;
-      await J.saveEntry(e); sent++;
-    }
-    if (!alive()) return;
+    // friends' photos come down before mine go up, so a slow or failing upload never hides the album from a new joiner
     let tree = await client.tree();
-    // 2) remove what I deleted
+    // 1) remove what I deleted
     if (SH.tomb.length) {
       for (const id of [...SH.tomb]) {
         for (const p of [`e/${id}.json`, `t/${id}.jpg`, `p/${id}.jpg`]) if (tree.has(p)) await client.del(p, tree.get(p));
@@ -1358,7 +1342,7 @@ async function syncShare({ quiet = true } = {}) {
       }
       tree = await client.tree();
     }
-    // 3) pull friends' records (and mine from an earlier install)
+    // 2) pull friends' records (and mine from an earlier install)
     const ids = new Set();
     for (const [path, sha] of tree) {
       if (!alive()) return;
@@ -1368,22 +1352,43 @@ async function syncShare({ quiet = true } = {}) {
       const local = JR.entries.find(x => x.id === id);
       if (local && (!local.remote || local.rsha === sha)) continue;
       let meta;
-      try { meta = normMeta(JSON.parse(await (await client.get(path)).text())); } catch (err) { if (err.rateLimited) throw err; console.warn('skip bad record', path, err); continue; }
+      // only a broken or just-deleted record is skipped; a dropped connection ends the run instead of reporting success
+      try { meta = normMeta(JSON.parse(await (await client.get(path)).text())); } catch (err) { if (err.status !== 404 && (err.status || err.timeout || err instanceof TypeError)) throw err; console.warn('skip bad record', path, err); continue; }
       const e = { ...meta, id, remote: meta.owner !== SH.device, rsha: sha, sync: 'done' };
-      const thumb = e.photo && !local && tree.has(`t/${id}.jpg`) ? await client.get(`t/${id}.jpg`).catch(() => null) : null;
+      const thumb = e.photo && !local && tree.has(`t/${id}.jpg`) ? await client.get(`t/${id}.jpg`).catch(err => { if (err.status === 404) return null; throw err; }) : null;
       if (e.photo && !local && tree.has(`t/${id}.jpg`) && !thumb) continue; // try again next sync instead of a blank tile forever
       if (!alive()) return;
+      if (SH.tomb.includes(id)) continue; // deleted on this phone while it downloaded
       await J.saveEntry(e, thumb ? { thumb } : {});
+      if (SH.tomb.includes(id)) { await J.deleteEntry(id).catch(() => {}); continue; }
       const now = JR.entries.find(x => x.id === id); // look again: the list can change while the record downloads
       if (now) Object.assign(now, e); else { JR.entries.push(e); if (e.remote) got++; }
       changed = true;
     }
-    // 4) drop friends' records their owners deleted
+    // 3) drop friends' records their owners deleted
     if (!alive()) return;
     for (const e of JR.entries.filter(x => x.remote && !ids.has(x.id))) {
       await J.deleteEntry(e.id).catch(() => {});
       const u = JR.urls.get(e.id); if (u) { URL.revokeObjectURL(u); JR.urls.delete(e.id); }
       JR.entries = JR.entries.filter(x => x !== e); changed = true;
+    }
+    // 4) upload my new/edited records (photos first, the record last, so friends never see a record without its photo)
+    for (const e of JR.entries.filter(x => !x.remote && x.sync !== 'done')) {
+      if (!alive()) return;
+      if (e.photo && (e.sync == null || e.sync === 'new')) { // records made before sharing have no sync state yet
+        const thumb = await J.getBlob(e.id, 'thumb').catch(() => null), full = await J.getBlob(e.id, 'full').catch(() => null);
+        if (thumb && !tree.has(`t/${e.id}.jpg`)) await client.put(`t/${e.id}.jpg`, thumb, { message: 'thumb ' + e.id });
+        if (full && !tree.has(`p/${e.id}.jpg`)) await client.put(`p/${e.id}.jpg`, full, { message: 'photo ' + e.id });
+      }
+      if (!JR.entries.includes(e)) continue; // deleted while its photo uploaded; the tombstone cleans up
+      const body = JSON.stringify(metaOf(e));
+      e.rsha = await client.put(`e/${e.id}.json`, body, { sha: e.rsha || tree.get(`e/${e.id}.json`) || null, message: 'record ' + e.id });
+      if (!JR.entries.includes(e)) continue;
+      e.sync = JSON.stringify(metaOf(e)) === body ? 'done' : 'dirty'; // edited during the upload → send again
+      if (e.sync === 'dirty') SH.again = true;
+      await J.saveEntry(e);
+      if (!JR.entries.includes(e)) { await J.deleteEntry(e.id).catch(() => {}); continue; } // deleted while it saved
+      sent++;
     }
     JR.entries.sort((a, b) => a.t - b.t);
     SH.lastSync = Date.now(); store.set('shareSync', SH.lastSync);
@@ -1416,6 +1421,10 @@ function shareCardHTML() {
     ${iosTab ? '<p class="note" style="margin-top:4px">아이폰은 홈 화면에 설치한 앱을 한 번 따로 연결해요: 카톡 초대 링크 복사 → 앱 열기 → 📸 앨범 → 🔑 초대받았어요 → 📋 붙여넣기</p>' : ''}
     ${authBad ? '<div class="links" style="margin-top:8px"><button class="small-btn" data-share-join="1">🔑 새 초대 링크 넣기</button><button class="small-btn" data-share-create="1">👑 방장: 새 토큰 넣기</button></div>' : ''}
     <div class="links" style="margin-top:8px"><button class="small-btn" data-share-sync="1">🔄 지금 동기화</button><button class="small-btn" data-share-invite="1">📨 친구 초대 링크</button><button class="small-btn" data-share-leave="1">연결 끊기</button></div></div>`;
+}
+function setShareClient(c) { // the sync still running on the old token stops at its next step and stays quiet
+  SH.client = c; store.set('share', c ? { token: c.token } : null); SH.err = null; SH.pauseUntil = 0;
+  SH.run = (SH.run || 0) + 1; SH.syncing = false; SH.again = false;
 }
 const shareAuthBad = () => !!(SH.err && !SH.err.rateLimited && [401, 403, 404].includes(SH.err.status));
 function shareModal(html) { const el = $('#jModal'); closeJModal(); el.innerHTML = `<div class="modal jshare" role="dialog" aria-label="공유 앨범">${html}</div>`; el.hidden = false; el.dataset.mode = 'share'; }
@@ -1458,11 +1467,11 @@ const joinCodeIn = text => { // an invite link, or the bare code from one
 const clearJoinURL = () => { if (/join=/.test(location.hash + location.search)) history.replaceState(null, '', location.pathname); }; // invites arrive as #join= or, after a hand-off to another browser, ?join=
 function openShareJoin(code = '') {
   const g = guide(), inApp = g.key === 'kakao' || g.key === 'inapp', iosBrowser = !inApp && /^ios/.test(g.key) && !isStandalone();
-  const where = inApp || iosBrowser ? `<div class="card warn-soft" style="margin-top:8px"><p>${inApp ? `${esc(g.title)}. 여기서 들어가면 이 창에서만 공유돼요.` : '브라우저에서 열었어요. 아이폰은 브라우저와 설치한 앱이 따로예요.'} 홈 화면에 설치한 앱에서 쓰려면: <b>앱 설치 → 초대 링크 복사 → 설치한 앱 열기 → 📸 앨범 → 🔑 초대받았어요 → 붙여넣기</b></p>
+  const where = inApp || iosBrowser ? `<div class="card warn-soft" style="margin-top:8px"><p>${inApp ? `${esc(g.title)}. 여기서 들어가면 이 창에서만 공유돼요.` : '브라우저에서 열었어요. 아이폰은 브라우저와 설치한 앱이 따로예요.'} 홈 화면에 설치한 앱에서 쓰려면: <b>앱 설치 → 카톡에서 초대 링크 복사 → 설치한 앱 열기 → 📸 앨범 → 📋 초대 링크 붙여넣기</b></p>
     <div class="links" style="margin-top:6px">${inApp && g.escape ? `<a class="small-btn" href="${esc(g.escape.href)}">${esc(g.escape.label)}</a>` : `<button class="small-btn" data-install-guide="1">📲 설치 방법</button>`}${code ? `<button class="small-btn" data-share-copy="${esc(inviteURL(code))}">📋 초대 링크 복사</button>` : ''}</div></div>` : '';
   const needsPass = v => { const c = joinCodeIn(v); return !!c && inviteNeedsPass(c); };
   shareModal(`<h2 class="j-title">🔑 공유 앨범 들어가기</h2>
-    <p class="note">카톡 초대 링크를 길게 눌러 복사한 뒤 <b>📋 붙여넣기</b>를 누르세요.${SH.client ? ' (지금 연결을 새 초대로 바꿔요)' : ''}</p>${where}
+    <p class="note">${!code ? '카톡 초대 링크를 길게 눌러 복사한 뒤 <b>📋 붙여넣기</b>를 누르세요.' : needsPass(code) ? '방장이 알려준 암호를 넣고 <b>들어가기</b>를 누르세요.' : '아래 <b>들어가기</b>만 누르면 돼요.'}${SH.client ? ' (지금 연결을 새 초대로 바꿔요)' : ''}</p>${where}
     <label class="j-label" for="shCode">초대 링크</label><textarea class="j-input" id="shCode" rows="2" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="초대 링크 붙여넣기">${esc(code)}</textarea>
     <div class="links" style="margin-top:6px"><button class="small-btn" data-share-paste="1">📋 붙여넣기</button></div>
     <div id="shPassBox"${needsPass(code) ? '' : ' hidden'}><label class="j-label" for="shJoinPass">그룹 암호 (예전 초대 링크라 암호가 필요해요)</label><input class="j-input" id="shJoinPass" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="방장이 알려준 암호"></div>
@@ -1471,19 +1480,23 @@ function openShareJoin(code = '') {
   box.addEventListener('input', () => { $('#shPassBox').hidden = !needsPass(box.value); });
 }
 async function joinShare(code, pass = '') { // → true when this phone is in the album afterwards
+  if (SH.joining) return false;
   let token;
   try { token = await openInvite(code, pass); } catch { toast(inviteNeedsPass(code) ? '암호나 초대 링크가 달라요 — 다시 확인해 주세요' : '초대 링크가 잘렸어요 — 링크 전체를 다시 복사해 주세요', 3500); return false; }
   if (!/^github_pat_\w{60,}$/.test(token)) { toast('초대 링크가 이상해요 — 방장에게 다시 받아 주세요', 3500); return false; }
   const same = SH.client?.token === token;
   if (!same) {
     const c = new ShareClient(token);
-    try { await c.check(); } catch (err) {
+    SH.joining = true; toast('🔑 공유 앨범 연결하는 중…', 30000);
+    let ok = null;
+    try { ok = await c.check(); } catch (err) {
       if (err.status === 401 || err.status === 404) { toast('초대 링크가 만료됐어요 — 방장에게 새 링크를 받아 주세요', 4000); return false; }
-      // offline or GitHub busy: the code itself checked out, so keep it and let the next sync confirm it
-    }
-    SH.client = c; store.set('share', { token }); SH.err = null; SH.pauseUntil = 0;
+      // offline or GitHub busy: a phone with no album takes the link now and the next sync confirms it; a working album is kept
+      if (SH.client && !shareAuthBad()) { toast('지금은 초대 링크를 확인할 수 없어요 — 인터넷이 잘 될 때 링크를 다시 눌러 주세요', 3500); return false; }
+    } finally { SH.joining = false; }
+    if (ok === false) { toast('초대 링크 권한이 모자라요 — 방장에게 다시 받아 주세요', 3500); return false; }
+    setShareClient(c);
   }
-  clearJoinURL();
   if ($('#jModal').dataset.mode === 'share') closeJModal();
   toast(same ? '✅ 이미 공유 앨범에 연결돼 있어요' : '👥 공유 앨범에 들어왔어요! 사진을 받는 중…', 3000);
   S.tab = 'album';
@@ -1491,11 +1504,16 @@ async function joinShare(code, pass = '') { // → true when this phone is in th
   syncShare({ quiet: same });
   return true;
 }
-function onJoinLink() { // invite links: #join=<code> (or ?join=<code>)
+function onJoinLink() { // invite links: #join=<code> (or ?join=<code>); the URL is cleaned right away so a reload never asks again
   const code = joinCodeIn(location.hash + '&' + location.search); if (!code) return;
-  if (!inviteNeedsPass(code)) { joinShare(code); return; } // one-tap invite
-  if (SH.client && !shareAuthBad()) { clearJoinURL(); toast('✅ 이미 공유 앨범에 연결돼 있어요', 2500); return; } // an older passcode link opened again
-  openShareJoin(code);
+  const k = guide().key, inApp = k === 'kakao' || k === 'inapp';
+  if (!inviteNeedsPass(code) && !inApp) { clearJoinURL(); joinShare(code); return; } // one-tap invite
+  if (!inviteNeedsPass(code)) { // in an in-app browser: no nagging once this window is in, else the modal with the hand-off button
+    openInvite(code).then(t => t === SH.client?.token, () => false).then(same => { if (same) toast('✅ 이미 공유 앨범에 연결돼 있어요', 2500); else openShareJoin(code); clearJoinURL(); });
+    return;
+  }
+  if (inviteNeedsPass(code) && SH.client && !shareAuthBad()) { clearJoinURL(); toast('✅ 이미 공유 앨범에 연결돼 있어요', 2500); return; } // an older passcode link opened again
+  openShareJoin(code); clearJoinURL(); // in-app browsers stay on the modal: it offers the hand-off to a real browser first
 }
 async function openShareInvite() {
   const token = store.get('share', null)?.token; if (!token) return;
@@ -1518,7 +1536,7 @@ async function onShareClick(q) {
   if (q('[data-share-sync]')) { syncShare({ quiet: false }); return true; }
   if ((b = q('[data-share-leave]'))) {
     if (!b.dataset.sure) { b.dataset.sure = '1'; b.textContent = '정말 끊을까요? 한 번 더'; return true; }
-    SH.client = null; store.set('share', null); toast('공유 앨범 연결을 끊었어요 (폰에 있는 사진은 그대로)', 3000); renderBody(true); return true;
+    setShareClient(null); toast('공유 앨범 연결을 끊었어요 (폰에 있는 사진은 그대로)', 3000); renderBody(true); return true;
   }
   if (q('[data-share-save]')) {
     const token = $('#shToken').value.trim();
@@ -1527,15 +1545,19 @@ async function onShareClick(q) {
     const c = new ShareClient(token);
     try { if (!(await c.check())) { toast('토큰 권한이 모자라요 — GitHub 내 토큰 목록 → 토큰 → 편집 → 권한 → 저장소 → 콘텐츠를 “읽기 및 쓰기”로 바꿔 주세요', 6000); return true; } }
     catch (err) { if (err.status === 404) { await showRepoDiag(c); return true; } toast(err.status === 401 ? '토큰이 틀렸거나 만료됐어요 — 토큰 생성 후 전체를 다시 복사해 주세요' : err.status === 404 ? `토큰이 ${REPO.name} 저장소를 못 봐요 — GitHub 내 토큰 목록 → 토큰 → 편집 → 저장소 액세스를 “저장소만 선택합니다 → ${REPO.name}”로 바꾸고 다시 눌러 주세요` : '확인 실패 — 인터넷 연결을 확인해 주세요', 6000); return true; }
-    SH.client = c; store.set('share', { token }); SH.err = null;
+    setShareClient(c);
     showInvite(await makeOpenInvite(token));
     syncShare({ quiet: false });
     return true;
   }
   if (q('[data-share-paste]')) {
-    let text = ''; try { text = await navigator.clipboard.readText(); } catch { /* not allowed here: paste by hand */ }
+    let text = '', blocked = false; try { text = await navigator.clipboard.readText(); } catch { blocked = true; } // some browsers never let a page read the clipboard
     const code = joinCodeIn(text), box = $('#shCode');
-    if (!code) { toast(box ? '복사한 초대 링크가 없어요 — 카톡에서 링크를 길게 눌러 복사하거나, 칸을 길게 눌러 붙여넣어 주세요' : '복사한 초대 링크가 없어요 — 카톡에서 링크를 길게 눌러 복사한 뒤 다시 눌러 주세요', 4000); box?.focus(); return true; }
+    if (!code) {
+      if (blocked && !box) { openShareJoin(); toast('여기선 붙여넣기 버튼이 막혀 있어요 — 칸을 길게 눌러 붙여넣고 들어가기를 누르세요', 4000); return true; }
+      toast(blocked ? '여기선 붙여넣기 버튼이 막혀 있어요 — 위 칸을 길게 눌러 붙여넣고 들어가기를 누르세요' : box ? '복사한 초대 링크가 없어요 — 카톡에서 링크를 길게 눌러 복사하거나, 칸을 길게 눌러 붙여넣어 주세요' : '복사한 초대 링크가 없어요 — 카톡에서 링크를 길게 눌러 복사한 뒤 다시 눌러 주세요', 4000);
+      box?.focus(); return true;
+    }
     if (box) { box.value = code; box.dispatchEvent(new Event('input')); }
     if (!inviteNeedsPass(code)) await joinShare(code);
     else if (box) $('#shJoinPass')?.focus();

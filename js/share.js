@@ -30,7 +30,7 @@ export async function makeOpenInvite(token) {
   const out = new Uint8Array(1 + 16 + 12 + ct.length); out[0] = 2; out.set(k, 1); out.set(iv, 17); out.set(ct, 29);
   return b64u(out);
 }
-export function inviteNeedsPass(code) { try { return unb64u(code.trim())[0] !== 2; } catch { return true; } }
+export function inviteNeedsPass(code) { try { return unb64u(code.trim().slice(0, 4))[0] !== 2; } catch { return true; } } // the first byte only, so a cut-off link still reads as one-tap
 export async function openInvite(code, pass = '') { // throws when the code is cut off or (for a passcode invite) the passcode is wrong
   const raw = unb64u(code.trim());
   if ((raw[0] !== 1 && raw[0] !== 2) || raw.length < 40) throw new Error('bad-code');
@@ -101,6 +101,7 @@ export class ShareClient {
     for (let attempt = 0; attempt < 5; attempt++) {
       const res = await this.req(`${this.base()}/contents/${path}`, { method: 'PUT', body: { message, content, branch: REPO.branch, ...(sha ? { sha } : {}) }, okStatus: [409, 422] });
       if (res.ok) return (await res.json()).content.sha;
+      if (res.status === 422 && data instanceof Blob) return null; // the photo is already there, and photos never change
       // 422 = the file exists but we sent no/old sha; 409 = sha mismatch or the branch moved under a concurrent commit
       const cur = await this.req(`${this.base()}/contents/${path}?ref=${REPO.branch}`, { okStatus: [404] });
       if (cur.ok) {

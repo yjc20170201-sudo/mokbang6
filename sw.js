@@ -2,7 +2,7 @@
 // Each version is an exact snapshot: every shipped file is precached (bypassing the HTTP cache) under a
 // cache named by the content hash, and served cache-first. Updates arrive only as a new sw.js; the page
 // shows an "업데이트" button that tells the waiting worker to take over, then reloads once.
-const VERSION = '515594d74a';
+const VERSION = 'fdc4c45d22';
 const CACHE = 'mokbang6-' + VERSION;
 const CORE = [
   "./",
@@ -44,6 +44,16 @@ self.addEventListener('install', (e) => {
     await c.addAll(CORE.map(u => new Request(u, { cache: 'reload' })));
     // CDN files are best-effort: a flaky connection must not block the install
     await Promise.all(CDN.map(u => c.add(new Request(u, { mode: 'cors' })).catch(() => {})));
+    // an invite link opened in an app still running a version that can't read one-tap invites: take over now, so the page
+    // reloads into this one (only then — an unconditional takeover would reload every open app on each deploy and could lose a draft)
+    const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    if (wins.some(w => w.url.startsWith(self.registration.scope) && /[?#&]join=/.test(w.url))) {
+      for (const k of await caches.keys()) {
+        if (!k.startsWith('mokbang6-') || k === CACHE) continue;
+        const old = await (await caches.open(k)).match('./js/share.js');
+        if (old && !(await old.text()).includes('makeOpenInvite')) { self.skipWaiting(); break; }
+      }
+    }
   })());
 });
 self.addEventListener('message', (e) => { if (e.data === 'skip') self.skipWaiting(); });
